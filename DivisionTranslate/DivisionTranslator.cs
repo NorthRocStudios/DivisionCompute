@@ -26,11 +26,6 @@ namespace DivisionTranslate
         private readonly List<string> kernelNames = [];
         private readonly HashSet<string> processedStructs = [];
 
-        // Helper struct method translation vars
-        private bool inStructMethod = false;
-        private string currentStructName = "";
-        private StructDeclarationSyntax? rootShaderStruct = null;
-
         /// <summary>
         /// Translates C# source code to HLSL source code.
         /// </summary>
@@ -39,7 +34,6 @@ namespace DivisionTranslate
         /// <returns>HLSL source code</returns>
         public string Translate(StructDeclarationSyntax shaderStruct)
         {
-            rootShaderStruct = shaderStruct;
             List<MethodDeclarationSyntax> kernels = FindAllKernels(shaderStruct);
             List<MethodDeclarationSyntax> inlineFuncs = FindAllInlineFunctions(shaderStruct);
             CollectFields(shaderStruct);
@@ -473,16 +467,6 @@ namespace DivisionTranslate
         /// </summary>
         public override void VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
         {
-            if (inStructMethod && node.Expression is IdentifierNameSyntax)
-            {
-                ISymbol? symbol = semanticModel.GetSymbolInfo(node).Symbol;
-                if (symbol is IFieldSymbol field && field.ContainingType?.Name == currentStructName)
-                {
-                    hlsl.Append($"self.{node.Name.Identifier.Text}"); // This is accessing a field of the current struct - prefix with 'self.'
-                    return;
-                }
-            }
-
             Visit(node.Expression);
             hlsl.Append($".{node.Name.Identifier.Text}");
         }
@@ -521,16 +505,6 @@ namespace DivisionTranslate
         /// </summary>
         public override void VisitIdentifierName(IdentifierNameSyntax node)
         {
-            if (inStructMethod)
-            {
-                ISymbol? symbol = semanticModel.GetSymbolInfo(node).Symbol;
-                if (symbol is IFieldSymbol field && field.ContainingType?.Name == currentStructName)
-                {
-                    hlsl.Append($"self.{node.Identifier.Text}"); // Field access without 'this.' - add 'self.' prefix
-                    return;
-                }
-            }
-
             hlsl.Append(node.Identifier.Text);
         }
 
@@ -566,19 +540,6 @@ namespace DivisionTranslate
         }
 
         /// <summary>
-        /// Checks if this is a built-in type in HLSL.
-        /// </summary>
-        /// <param name="typeName">HLSL type name</param>
-        /// <returns>If HLSL built-in type</returns>
-        private static bool IsBuiltInType(string typeName) => 
-            typeName == "float" || typeName == "int" || typeName == "uint" ||
-            typeName == "double" || typeName == "bool" || typeName == "half" ||
-            (typeName.Length >= 6 && (typeName.StartsWith("float") || typeName.StartsWith("int") ||
-            typeName.StartsWith("uint") || typeName.StartsWith("double") ||
-            typeName.StartsWith("bool") || typeName.StartsWith("half")) &&
-            (typeName.EndsWith('2') || typeName.EndsWith('3') || typeName.EndsWith('4')));
-
-        /// <summary>
         /// Translates an outside struct declartion to a GPU compliant type definition.
         /// </summary>
         private void TranslateStructDeclaration(StructDeclarationSyntax structDecl)
@@ -587,10 +548,7 @@ namespace DivisionTranslate
             structBuilder.AppendLine($"struct {structDecl.Identifier.Text}");
             structBuilder.AppendLine("{");
 
-            // Translate any methods inside this struct as inline functions
-            foreach (MethodDeclarationSyntax method in structDecl.Members.OfType<MethodDeclarationSyntax>())
-                TranslateInlineFunction(method);
-
+            // Skip methods inside structs - only translate fields
             foreach (FieldDeclarationSyntax field in structDecl.Members.OfType<FieldDeclarationSyntax>())
             {
                 TypeSyntax fieldType = field.Declaration.Type;
@@ -598,7 +556,6 @@ namespace DivisionTranslate
                 ITypeSymbol? typeSymbol = semanticModel.GetTypeInfo(fieldType).Type;
                 string hlslType = ConvertType(typeSymbol);
 
-                // Check if this field itself contains a custom struct
                 if (typeSymbol is INamedTypeSymbol namedType && namedType.TypeKind == TypeKind.Struct && !IsBuiltInType(namedType.Name))
                     TranslateStructIfNeeded(namedType);
                 structBuilder.AppendLine($"    {hlslType} {fieldName};");
@@ -621,24 +578,6 @@ namespace DivisionTranslate
             string hlslReturnType = ConvertType(returnType);
             List<string> parameters = [];
 
-            // Check if this method belongs to a struct and is not main shader struct
-            bool isNestedStructMethod = false;
-            string structName = "";
-
-            if (method.Parent is StructDeclarationSyntax containingStruct)
-            {
-                // Check if the containing struct has a parent (meaning it's nested)
-                // Or we could check if it's not the root shader struct
-                bool isMainShaderStruct = containingStruct == rootShaderStruct;
-
-                if (!isMainShaderStruct)
-                {
-                    isNestedStructMethod = true;
-                    structName = containingStruct.Identifier.Text;
-                    parameters.Add($"{structName} self"); // Add the struct instance as the first parameter
-                }
-            }
-
             // Parameter setup
             foreach (ParameterSyntax param in method.ParameterList.Parameters)
             {
@@ -658,12 +597,7 @@ namespace DivisionTranslate
             int oldIndent = indentLvl;
             indentLvl = 1;
 
-            // Track translating a struct method so field access knows to add 'self.'
-            inStructMethod = isNestedStructMethod;
-            currentStructName = structName;
             foreach (StatementSyntax statement in method.Body!.Statements) Visit(statement);
-            inStructMethod = false;
-            currentStructName = "";
 
             string body = hlsl.ToString();
             builder.Append(body);
@@ -679,7 +613,7 @@ namespace DivisionTranslate
         /// <summary>
         /// Discovers all non-kernel methods (inline functions) in the shader struct.
         /// </summary>
-        private List<MethodDeclarationSyntax> FindAllInlineFunctions(StructDeclarationSyntax shaderStruct)
+        private static List<MethodDeclarationSyntax> FindAllInlineFunctions(StructDeclarationSyntax shaderStruct)
         {
             List<MethodDeclarationSyntax> functions = [];
             foreach (MethodDeclarationSyntax method in shaderStruct.Members.OfType<MethodDeclarationSyntax>())
@@ -862,33 +796,44 @@ namespace DivisionTranslate
             string hlslType = ConvertType(typeSymbol);
 
             // Only allow basic types and vector types
-            if (IsAllowedVariableType(hlslType)) return $"{hlslType} {fieldName};";
+            if (IsBuiltInType(hlslType)) return $"{hlslType} {fieldName};";
             return null;
         }
 
         /// <summary>
-        /// Checks to see if an HLSL type is allowed in the shader as a variable.
+        /// Checks if a type is a built-in HLSL type (does not need custom struct translation)
         /// </summary>
-        /// <param name="hlslType">HLSL global variable type</param>
-        /// <returns>If the global variable type is valid</returns>
-        private static bool IsAllowedVariableType(string hlslType)
+        private static bool IsBuiltInType(string typeName)
         {
-            if (hlslType == "float" || hlslType == "int" || hlslType == "uint" || // Scalar types
-                hlslType == "double" || hlslType == "bool" || hlslType == "half")
-                return true;
+            // Scalars
+            string[] scalars = ["float", "int", "uint", "double", "bool", "half"];
+            if (scalars.Contains(typeName)) return true;
 
-            if (hlslType.Length >= 6 && // Vector types (float2, int3, double4, etc.)
-                (hlslType.StartsWith("float") || hlslType.StartsWith("int") ||
-                 hlslType.StartsWith("uint") || hlslType.StartsWith("double") ||
-                 hlslType.StartsWith("bool") || hlslType.StartsWith("half")))
+            // Vectors (float2, float3, float4, int2, int3, int4, etc.)
+            string[] prefixes = ["float", "int", "uint", "double", "bool", "half"];
+            string[] suffixes = ["2", "3", "4"];
+
+            foreach (string prefix in prefixes)
             {
-                string suffix = hlslType[^1..];
-                return suffix == "2" || suffix == "3" || suffix == "4";
+                foreach (string suffix in suffixes)
+                {
+                    if (typeName == $"{prefix}{suffix}")
+                        return true;
+                }
             }
 
-            // Matrix types (float3x3, float4x4, etc.) - for future support
-            if (hlslType.Contains('x') && (hlslType.StartsWith("float") || hlslType.StartsWith("double")))
-                return true;
+            // Matrices (float2x2, float3x2, float2x4, int3x3, etc.)
+            foreach (string prefix in prefixes)
+            {
+                foreach (string suffix in suffixes)
+                {
+                    foreach (string suffix2 in suffixes)
+                    {
+                        if (typeName == $"{prefix}{suffix}x{suffix2}")
+                            return true;
+                    }
+                }
+            }
             return false;
         }
 

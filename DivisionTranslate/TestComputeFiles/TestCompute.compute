@@ -1,48 +1,26 @@
-﻿#pragma kernel TraceRays
+﻿
+#pragma kernel Execute
 
-struct Ray
+struct MyDataStruct
 {
-    float3 origin;
-    float3 direction;
+    float3 position;
+    float value;
 };
 
-struct HitInfo
-{
-    float distance;
-    float3 point;
-    float3 normal;
-    float3 color;
-};
+Buffer<float> InputBuffer;
+RWBuffer<float> OutputBuffer;
+StructuredBuffer<MyDataStruct> DataBuffer;
+Texture2D<float4> InputTexture;
+RWTexture2D<float4> OutputTexture;
 
-StructuredBuffer<Ray> Rays;
-RWStructuredBuffer<HitInfo> Hits;
-Texture2D<float4> SceneTexture;
-SamplerState SceneSampler;
-
-float3 _sphereCenter;
-float _sphereRadius;
-float3 _sphereColor;
+float3 _cameraPosition;
+float _time;
 
 [numthreads(8, 8, 1)]
-void TraceRays(uint3 id : SV_DispatchThreadID)
+void Execute(uint3 id : SV_DispatchThreadID)
 {
-    Ray ray = Rays[id.x];
-    float t = HitSphere(ray, _sphereCenter, _sphereRadius);
-    HitInfo hit;
-    if (t > 0)
-    {
-        hit.distance = t;
-        hit.point = GetPoint(t);
-        hit.normal = normalize(hit.point
-        -_sphereCenter);
-        hit.color = _sphereColor;
-    }
-    else
-    {
-        hit.distance = -1;
-        hit.point = float3(0, 0, 0);
-        hit.normal = float3(0, 0, 0);
-        hit.color = float4(1, 1, 1, 1);
-    }
-    Hits[id.x] = hit;
+    float4 color = InputTexture[id.xy];
+    float processed = color.r * _time;
+    OutputBuffer[id.x] = processed;
+    OutputTexture[id.xy] = float4(processed, processed, processed, 1.0);
 }

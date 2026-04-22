@@ -5,7 +5,7 @@ using DivisionTranslate.Graphics;
 [Shader("D:\\Visual Studio\\Projects\\DivisionTranslate\\DivisionTranslate\\TestShaders\\TestMathShader.cs")]
 public struct MyShader
 {
-    [Kernel()]
+    [Kernel(8, 8, 1)]
     public void Execute(uint3 id)
     {
         float3 pos = new float3(id.x, id.y, id.z);
