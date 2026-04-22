@@ -1,0 +1,48 @@
+﻿#pragma kernel TraceRays
+
+struct Ray
+{
+    float3 origin;
+    float3 direction;
+};
+
+struct HitInfo
+{
+    float distance;
+    float3 point;
+    float3 normal;
+    float3 color;
+};
+
+StructuredBuffer<Ray> Rays;
+RWStructuredBuffer<HitInfo> Hits;
+Texture2D<float4> SceneTexture;
+SamplerState SceneSampler;
+
+float3 _sphereCenter;
+float _sphereRadius;
+float3 _sphereColor;
+
+[numthreads(8, 8, 1)]
+void TraceRays(uint3 id : SV_DispatchThreadID)
+{
+    Ray ray = Rays[id.x];
+    float t = HitSphere(ray, _sphereCenter, _sphereRadius);
+    HitInfo hit;
+    if (t > 0)
+    {
+        hit.distance = t;
+        hit.point = GetPoint(t);
+        hit.normal = normalize(hit.point
+        -_sphereCenter);
+        hit.color = _sphereColor;
+    }
+    else
+    {
+        hit.distance = -1;
+        hit.point = float3(0, 0, 0);
+        hit.normal = float3(0, 0, 0);
+        hit.color = float4(1, 1, 1, 1);
+    }
+    Hits[id.x] = hit;
+}

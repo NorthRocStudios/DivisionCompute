@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="DivisionTranslate/DivisionTranslate.csproj" />
+  <Project Path="TranslatorConsole/TranslatorConsole.csproj" />
+</Solution>
