@@ -274,4 +274,179 @@ namespace DivisionTranslate.TestShaders
             Hits[id.x] = hit;
         }
     }
+
+    [Shader("D:\\Visual Studio\\Projects\\DivisionTranslate\\DivisionTranslate\\TestShaders\\TestResourceShaders.cs")]
+    public struct InlineFunctionTest1
+    {
+        // Nested struct with multiple methods
+        public struct ComplexNumber
+        {
+            public float real;
+            public float imag;
+
+            public ComplexNumber Add(ComplexNumber other)
+            {
+                ComplexNumber result;
+                result.real = real + other.real;
+                result.imag = imag + other.imag;
+                return result;
+            }
+
+            public float Magnitude()
+            {
+                return math.sqrt(real * real + imag * imag);
+            }
+
+            public ComplexNumber Multiply(ComplexNumber other)
+            {
+                ComplexNumber result;
+                result.real = real * other.real - imag * other.imag;
+                result.imag = real * other.imag + imag * other.real;
+                return result;
+            }
+        }
+
+        // Regular helper function
+        float SmoothStep(float edge0, float edge1, float x)
+        {
+            float t = math.clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+            return t * t * (3.0f - 2.0f * t);
+        }
+
+        // Another helper with complex math
+        float3 CalculateNormal(float3 pos, float epsilon)
+        {
+            float3 normal;
+            normal.x = SmoothStep(0, 1, pos.x);
+            normal.y = SmoothStep(0, 1, pos.y);
+            normal.z = SmoothStep(0, 1, pos.z);
+            return math.normalize(normal);
+        }
+
+        [ShaderResource]
+        StructuredBuffer<ComplexNumber> InputData;
+
+        [ShaderResource]
+        RWStructuredBuffer<ComplexNumber> OutputData;
+
+        float _scale;
+
+        [Kernel(ThreadsX = 64, ThreadsY = 1, ThreadsZ = 1)]
+        public void ProcessComplex(uint3 id)
+        {
+            ComplexNumber input = InputData[id.x];
+            ComplexNumber scaled;
+            scaled.real = input.real * _scale;
+            scaled.imag = input.imag * _scale;
+
+            ComplexNumber result = input.Add(scaled);
+            result = result.Multiply(input);
+
+            float mag = result.Magnitude();
+
+            OutputData[id.x] = result;
+        }
+    }
+
+    [Shader("D:\\Visual Studio\\Projects\\DivisionTranslate\\DivisionTranslate\\TestShaders\\TestResourceShaders.cs")]
+    public struct InlineFunctionTest2
+    {
+        // Nested struct with utility method
+        public struct ColorRGB
+        {
+            public float r, g, b;
+
+            public ColorRGB Scale(float factor)
+            {
+                ColorRGB result;
+                result.r = r * factor;
+                result.g = g * factor;
+                result.b = b * factor;
+                return result;
+            }
+
+            public float Luminance()
+            {
+                return r * 0.299f + g * 0.587f + b * 0.114f;
+            }
+        }
+
+        // Multiple helper functions that call each other
+        float Gaussian(float x, float sigma)
+        {
+            float sigma2 = sigma * sigma;
+            return math.exp(-(x * x) / (2.0f * sigma2)) / (math.sqrt(2.0f * math.PI) * sigma);
+        }
+
+        float3 BlurPixel(float3 center, float3 left, float3 right, float3 up, float3 down, float sigma)
+        {
+            float weightCenter = Gaussian(0, sigma);
+            float weightSide = Gaussian(1, sigma);
+
+            float3 result = center * weightCenter;
+            result += left * weightSide;
+            result += right * weightSide;
+            result += up * weightSide;
+            result += down * weightSide;
+
+            float totalWeight = weightCenter + weightSide * 4;
+            return result / totalWeight;
+        }
+
+        ColorRGB ToneMap(ColorRGB color, float exposure)
+        {
+            ColorRGB mapped;
+            mapped.r = 1.0f - math.exp(-color.r * exposure);
+            mapped.g = 1.0f - math.exp(-color.g * exposure);
+            mapped.b = 1.0f - math.exp(-color.b * exposure);
+            return mapped;
+        }
+
+        [ShaderResource]
+        Texture2D<float4> InputImage;
+
+        [ShaderResource]
+        RWTexture2D<float4> OutputImage;
+
+        [ShaderResource]
+        Sampler ImageSampler;
+
+        float _exposure;
+        float _blurSigma;
+
+        [Kernel(ThreadsX = 8, ThreadsY = 8, ThreadsZ = 1)]
+        public void ProcessImage(uint3 id)
+        {
+            uint2 coord = id.xy;
+            uint2 dimensions = new uint2(1, 1); // test value
+            //OutputImage.GetDimensions(dimensions.x, dimensions.y); - not available yet
+
+            // Sample neighboring pixels
+            float4 center = InputImage[coord];
+            float4 left = InputImage[new uint2(math.max(coord.x - 1, 0), coord.y)];
+            float4 right = InputImage[new uint2(math.min(coord.x + 1, dimensions.x - 1), coord.y)];
+            float4 up = InputImage[new uint2(coord.x, math.max(coord.y - 1, 0))];
+            float4 down = InputImage[new uint2(coord.x, math.min(coord.y + 1, dimensions.y - 1))];
+
+            // Blur
+            float3 blurred = BlurPixel(center.xyz, left.xyz, right.xyz, up.xyz, down.xyz, _blurSigma);
+
+            // Convert to ColorRGB
+            ColorRGB color;
+            color.r = blurred.x;
+            color.g = blurred.y;
+            color.b = blurred.z;
+
+            // Calculate luminance
+            float luminance = color.Luminance();
+
+            // Tone map
+            ColorRGB mapped = ToneMap(color, _exposure);
+
+            // Scale by luminance for effect
+            ColorRGB final = mapped.Scale(luminance);
+
+            OutputImage[coord] = new float4(final.r, final.g, final.b, 1.0f);
+        }
+    }
 }

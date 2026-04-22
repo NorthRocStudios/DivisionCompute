@@ -12,17 +12,24 @@ namespace DivisionTranslate
     /// <param name="semanticModel">Semantic model used for translation</param>
     public class DivisionTranslator(SemanticModel semanticModel) : CSharpSyntaxWalker
     {
+        // Translation vars
         private readonly SemanticModel semanticModel = semanticModel;
         private readonly StringBuilder hlsl = new StringBuilder();
         private int indentLvl = 0;
+        private int? threadsX, threadsY, threadsZ;
 
+        // Storage for translation
         private readonly List<string> resourceDeclarations = [];
         private readonly List<string> variableDeclarations = [];
         private readonly List<string> structDeclarations = [];
         private readonly List<string> inlineFunctions = [];
         private readonly List<string> kernelNames = [];
         private readonly HashSet<string> processedStructs = [];
-        private int? threadsX, threadsY, threadsZ;
+
+        // Helper struct method translation vars
+        private bool inStructMethod = false;
+        private string currentStructName = "";
+        private StructDeclarationSyntax? rootShaderStruct = null;
 
         /// <summary>
         /// Translates C# source code to HLSL source code.
@@ -32,16 +39,18 @@ namespace DivisionTranslate
         /// <returns>HLSL source code</returns>
         public string Translate(StructDeclarationSyntax shaderStruct)
         {
+            rootShaderStruct = shaderStruct;
             List<MethodDeclarationSyntax> kernels = FindAllKernels(shaderStruct);
-            CollectFields(shaderStruct); // Collect all fields from the struct
+            List<MethodDeclarationSyntax> inlineFuncs = FindAllInlineFunctions(shaderStruct);
+            CollectFields(shaderStruct);
 
-            // Add all #pragma kernel directives
-            foreach (string name in kernelNames) hlsl.AppendLine($"#pragma kernel {name}");
+            // Translate inline functions separately
+            foreach (MethodDeclarationSyntax func in inlineFuncs) TranslateInlineFunction(func);
+
+            foreach (string name in kernelNames) hlsl.AppendLine($"#pragma kernel {name}"); // Add #pragma kernel directives
             hlsl.AppendLine();
-
-            // Add struct declarations
-            foreach (string structDecl in structDeclarations) hlsl.AppendLine(structDecl);
-            //if (structDeclarations.Count > 0) hlsl.AppendLine();
+            foreach (string structDecl in structDeclarations) hlsl.AppendLine(structDecl); // Add struct declarations
+            foreach (string func in inlineFunctions) hlsl.AppendLine(func); // Add inline functions
 
             // Add resource & variable declarations
             foreach (string resource in resourceDeclarations) hlsl.AppendLine(resource);
@@ -269,6 +278,21 @@ namespace DivisionTranslate
         }
 
         /// <summary>
+        /// Translates return statements.
+        /// </summary>
+        public override void VisitReturnStatement(ReturnStatementSyntax node)
+        {
+            WriteIndent();
+            hlsl.Append("return");
+            if (node.Expression != null)
+            {
+                hlsl.Append(' ');
+                Visit(node.Expression);
+            }
+            hlsl.AppendLine(";");
+        }
+
+        /// <summary>
         /// Shouldn't be called, fallback statement translation.
         /// </summary>
         public override void VisitEmptyStatement(EmptyStatementSyntax node) { }
@@ -298,8 +322,33 @@ namespace DivisionTranslate
         /// </summary>
         public override void VisitInvocationExpression(InvocationExpressionSyntax node)
         {
-            SymbolInfo symbolInfo = semanticModel.GetSymbolInfo(node);
+            if (node.Expression is MemberAccessExpressionSyntax memberAccess)
+            {
+                string methodName = memberAccess.Name.Identifier.Text;
+                ExpressionSyntax instance = memberAccess.Expression;
 
+                // Check if the method belongs to a struct type
+                IMethodSymbol? methodSymbol = semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
+                if (methodSymbol?.ContainingType?.TypeKind == TypeKind.Struct)
+                {
+                    // This is a struct method call - translate to function call with instance as first param
+                    hlsl.Append($"{methodName}(");
+                    Visit(instance); // Pass the instance as first parameter
+                    if (node.ArgumentList.Arguments.Count > 0)
+                    {
+                        hlsl.Append(", ");
+                        for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
+                        {
+                            if (i > 0) hlsl.Append(", ");
+                            Visit(node.ArgumentList.Arguments[i].Expression);
+                        }
+                    }
+                    hlsl.Append(')');
+                    return;
+                }
+            }
+
+            SymbolInfo symbolInfo = semanticModel.GetSymbolInfo(node);
             if (symbolInfo.Symbol is IMethodSymbol method)
             {
                 // Check if math function - output just the name
@@ -317,10 +366,10 @@ namespace DivisionTranslate
             else
             {
                 // Fallback: try to detect math. pattern from syntax
-                if (node.Expression is MemberAccessExpressionSyntax memberAccess &&
-                    memberAccess.Expression.ToString() == "math")
+                if (node.Expression is MemberAccessExpressionSyntax memberAccessFallback &&
+                    memberAccessFallback.Expression.ToString() == "math")
                 {
-                    hlsl.Append(memberAccess.Name.Identifier.Text);
+                    hlsl.Append(memberAccessFallback.Name.Identifier.Text);
                     hlsl.Append('('); // Open argument list
                     for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
                     {
@@ -424,6 +473,16 @@ namespace DivisionTranslate
         /// </summary>
         public override void VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
         {
+            if (inStructMethod && node.Expression is IdentifierNameSyntax)
+            {
+                ISymbol? symbol = semanticModel.GetSymbolInfo(node).Symbol;
+                if (symbol is IFieldSymbol field && field.ContainingType?.Name == currentStructName)
+                {
+                    hlsl.Append($"self.{node.Name.Identifier.Text}"); // This is accessing a field of the current struct - prefix with 'self.'
+                    return;
+                }
+            }
+
             Visit(node.Expression);
             hlsl.Append($".{node.Name.Identifier.Text}");
         }
@@ -462,6 +521,16 @@ namespace DivisionTranslate
         /// </summary>
         public override void VisitIdentifierName(IdentifierNameSyntax node)
         {
+            if (inStructMethod)
+            {
+                ISymbol? symbol = semanticModel.GetSymbolInfo(node).Symbol;
+                if (symbol is IFieldSymbol field && field.ContainingType?.Name == currentStructName)
+                {
+                    hlsl.Append($"self.{node.Identifier.Text}"); // Field access without 'this.' - add 'self.' prefix
+                    return;
+                }
+            }
+
             hlsl.Append(node.Identifier.Text);
         }
 
@@ -518,6 +587,10 @@ namespace DivisionTranslate
             structBuilder.AppendLine($"struct {structDecl.Identifier.Text}");
             structBuilder.AppendLine("{");
 
+            // Translate any methods inside this struct as inline functions
+            foreach (MethodDeclarationSyntax method in structDecl.Members.OfType<MethodDeclarationSyntax>())
+                TranslateInlineFunction(method);
+
             foreach (FieldDeclarationSyntax field in structDecl.Members.OfType<FieldDeclarationSyntax>())
             {
                 TypeSyntax fieldType = field.Declaration.Type;
@@ -537,6 +610,71 @@ namespace DivisionTranslate
 
         #endregion OutsideStructTranslation
         #region InlineFunctionTranslation
+
+        /// <summary>
+        /// Translates a non-kernel method to an HLSL inline function.
+        /// </summary>
+        private void TranslateInlineFunction(MethodDeclarationSyntax method)
+        {
+            StringBuilder builder = new StringBuilder();
+            ITypeSymbol? returnType = semanticModel.GetDeclaredSymbol(method)?.ReturnType;
+            string hlslReturnType = ConvertType(returnType);
+            List<string> parameters = [];
+
+            // Check if this method belongs to a struct and is not main shader struct
+            bool isNestedStructMethod = false;
+            string structName = "";
+
+            if (method.Parent is StructDeclarationSyntax containingStruct)
+            {
+                // Check if the containing struct has a parent (meaning it's nested)
+                // Or we could check if it's not the root shader struct
+                bool isMainShaderStruct = containingStruct == rootShaderStruct;
+
+                if (!isMainShaderStruct)
+                {
+                    isNestedStructMethod = true;
+                    structName = containingStruct.Identifier.Text;
+                    parameters.Add($"{structName} self"); // Add the struct instance as the first parameter
+                }
+            }
+
+            // Parameter setup
+            foreach (ParameterSyntax param in method.ParameterList.Parameters)
+            {
+                ITypeSymbol? paramType = semanticModel.GetTypeInfo(param.Type!).Type;
+                string hlslParamType = ConvertType(paramType);
+                parameters.Add($"{hlslParamType} {param.Identifier.Text}");
+            }
+
+            // Function signature
+            builder.Append($"{hlslReturnType} {method.Identifier.Text}({string.Join(", ", parameters)})");
+            builder.AppendLine();
+            builder.AppendLine("{");
+
+            // Temporarily store current HLSL content and switch to new builder for the body
+            string originalHlsl = hlsl.ToString();
+            hlsl.Clear();
+            int oldIndent = indentLvl;
+            indentLvl = 1;
+
+            // Track translating a struct method so field access knows to add 'self.'
+            inStructMethod = isNestedStructMethod;
+            currentStructName = structName;
+            foreach (StatementSyntax statement in method.Body!.Statements) Visit(statement);
+            inStructMethod = false;
+            currentStructName = "";
+
+            string body = hlsl.ToString();
+            builder.Append(body);
+
+            hlsl.Clear(); // Restore original HLSL
+            hlsl.Append(originalHlsl);
+            indentLvl = oldIndent;
+
+            builder.AppendLine("}");
+            inlineFunctions.Add(builder.ToString());
+        }
 
         /// <summary>
         /// Discovers all non-kernel methods (inline functions) in the shader struct.
