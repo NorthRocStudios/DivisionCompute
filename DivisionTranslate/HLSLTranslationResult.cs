@@ -3,7 +3,7 @@
     /// <summary>
     /// Represents the result of compiling a C# shader to HLSL
     /// </summary>
-    public class CompiledDivisionShader
+    public class HLSLTranslationResult
     {
         /// <summary>
         /// Was the shader compilation a success or failure?
@@ -20,26 +20,44 @@
         /// </summary>
         public string? ErrorMessage { get; }
 
-        private CompiledDivisionShader(bool success, string? hlslCode, string? errorMessage)
+        /// <summary>
+        /// Name of each translated shader kernel.
+        /// </summary>
+        public List<string> KernelNames { get; }
+
+        /// <summary>
+        /// Name of the containing shader type.
+        /// </summary>
+        public string ShaderTypeName { get; }
+
+        private HLSLTranslationResult(bool success, string? hlslCode, string? errorMessage,
+                                   List<string> kernelNames, string shaderTypeName)
         {
             IsSuccess = success;
             HLSLCode = hlslCode;
             ErrorMessage = errorMessage;
+            KernelNames = kernelNames ?? [];
+            ShaderTypeName = shaderTypeName;
         }
 
         /// <summary>
         /// Create a successful compilation result.
         /// </summary>
         /// <param name="hlslCode">Compiled HLSL code</param>
+        /// <param name="kernelNames">Name of each translated kernel</param>
+        /// <param name="shaderTypeName">Shader type name</param>
         /// <returns>Compilation result container</returns>
-        public static CompiledDivisionShader Success(string hlslCode) => new CompiledDivisionShader(true, hlslCode, null);
+        public static HLSLTranslationResult Success(string hlslCode, List<string> kernelNames, string shaderTypeName) => 
+            new HLSLTranslationResult(true, hlslCode, null, kernelNames, shaderTypeName);
 
         /// <summary>
         /// Create a failed compilation result.
         /// </summary>
         /// <param name="errorMessage">Error message for compilation failure</param>
+        /// <param name="shaderTypeName">Shader type name if available</param>
         /// <returns>Compilation result container</returns>
-        public static CompiledDivisionShader Failure(string errorMessage) => new CompiledDivisionShader(false, null, errorMessage);
+        public static HLSLTranslationResult Failure(string errorMessage, string shaderTypeName = "Unknown") => 
+            new HLSLTranslationResult(false, null, errorMessage, [], shaderTypeName);
 
         /// <summary>
         /// Compilation result string.
