@@ -11,6 +11,7 @@
     <PackageReference Include="Microsoft.CodeAnalysis" Version="5.3.0" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
     <PackageReference Include="Vortice.Dxc" Version="3.8.3" />
+    <PackageReference Include="Vortice.Dxc.Native" Version="1.0.5" />
   </ItemGroup>
 
   <ItemGroup>

@@ -41,7 +41,8 @@ namespace DivisionTranslate
             // Translate inline functions separately
             foreach (MethodDeclarationSyntax func in inlineFuncs) TranslateInlineFunction(func);
 
-            foreach (string name in kernelNames) hlsl.AppendLine($"#pragma kernel {name}"); // Add #pragma kernel directives
+            // Note: do not need #pragma kernel directives - this is a unity specific feature
+
             hlsl.AppendLine();
             foreach (string structDecl in structDeclarations) hlsl.AppendLine(structDecl); // Add struct declarations
             foreach (string func in inlineFunctions) hlsl.AppendLine(func); // Add inline functions
