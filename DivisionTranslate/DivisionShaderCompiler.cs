@@ -67,29 +67,17 @@ namespace DivisionTranslate
                 SkipValidation = false,
             };
 
-            var args = new List<string>
-            {
-                "-E", translatedShader.KernelNames.First(),
-                "-T", "cs_6_0",
-                "-O" + OptimizationLevel.ToString(),
-                "-Wall",                      // Enable all warnings
-                "-Wunused-variable",          // Unused variable warnings
-                "-Wunused-function",          // Unused function warnings  
-                "-Wunreachable-code",         // Unreachable code warnings
-                "-Wconversion",               // Conversion warnings (already on by default)
-                "-Wsign-compare",             // Signed/unsigned comparison warnings
-            };
+            List<string> additionalArgs =
+            [
+                "-Wall",
+            ];
 
-            if (EnableDebugInfo)
-            {
-                args.Add("-Zi");
-                args.Add("-Qembed_debug");
-            }
-
-            // DXC compiles the entire shader at once, all kernels are included
             IDxcResult dxcResult = DxcCompiler.Compile(
+                DxcShaderStage.Compute,
                 translatedShader.HLSLCode!,
-                args.ToArray()
+                translatedShader.KernelNames.First(),
+                dxcCompilerOptions,
+                additionalArguments: [.. additionalArgs]
             );
 
             Result compilerStatus = dxcResult.GetStatus();
@@ -102,7 +90,6 @@ namespace DivisionTranslate
                     if (dxcResult.HasOutput(DxcOutKind.Errors))
                     {
                         IDxcBlob debugBlob = dxcResult.GetOutput(DxcOutKind.Errors);
-                        Debug.WriteLine($"Debug blob size: {debugBlob.AsBytes().Length}");
                         if (debugBlob.AsBytes().Length > 0) debugOutput = Encoding.UTF8.GetString(debugBlob.AsBytes());
                         debugBlob.Dispose();
                     }
