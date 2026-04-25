@@ -6,18 +6,14 @@ using SharpGen.Runtime;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
-using Vortice.Dxc;
+using Vortice.D3DCompiler;
+using Vortice.Direct3D;
 
 namespace DivisionTranslate
 {
     public class DivisionShaderCompiler
     {
-        public DxcShaderModel DXCShaderModel { get; set; } = DxcShaderModel.Model6_0;
-        public bool EnableDebugInfo { get; set; } = true;
-        public int OptimizationLevel { get; set; } = 3;
-
         private readonly List<MetadataReference> assemblyRefs;
-        private DxcCompilerOptions dxcCompilerOptions;
 
         public DivisionShaderCompiler()
         {
@@ -28,14 +24,6 @@ namespace DivisionTranslate
                 MetadataReference.CreateFromFile(typeof(ShaderAttribute).Assembly.Location),
                 MetadataReference.CreateFromFile(typeof(Graphics.Buffer<>).Assembly.Location),
             ];
-            dxcCompilerOptions = new DxcCompilerOptions
-            {
-                ShaderModel = DXCShaderModel,
-                OptimizationLevel = OptimizationLevel,
-                EnableDebugInfo = EnableDebugInfo,
-                WarningsAreErrors = false,
-                SkipValidation = false,
-            };
         }
 
         /// <summary>
@@ -54,84 +42,138 @@ namespace DivisionTranslate
         }
 
         /// <summary>
-        /// Compiles HLSL source code to DXIL bytecode using DXC.
+        /// Compiles HLSL source code to bytecode using the D3D compiler.
         /// </summary>
         public HLSLCompilationResult CompileHLSL(HLSLTranslationResult translatedShader)
         {
-            dxcCompilerOptions = new DxcCompilerOptions
-            {
-                ShaderModel = DXCShaderModel,
-                OptimizationLevel = OptimizationLevel,
-                EnableDebugInfo = EnableDebugInfo,
-                WarningsAreErrors = false,
-                SkipValidation = false,
-            };
-
-            List<string> additionalArgs =
-            [
-                "-Wall",
-            ];
-
-            IDxcResult dxcResult = DxcCompiler.Compile(
-                DxcShaderStage.Compute,
+            // Use the overload that returns separate code and error blobs
+            Result compileResult = Compiler.Compile(
                 translatedShader.HLSLCode!,
                 translatedShader.KernelNames.First(),
-                dxcCompilerOptions,
-                additionalArguments: [.. additionalArgs]
+                translatedShader.ShaderTypeName,
+                "cs_5_0",
+                out Blob? codeBlob,
+                out Blob? errorBlob
             );
 
-            Result compilerStatus = dxcResult.GetStatus();
-            if (compilerStatus.Success)
-            {
-                if (dxcResult.HasOutput(DxcOutKind.Object))
-                {
-                    // Compilation succeeded, get the bytecode
-                    string debugOutput = compilerStatus.Description ?? "No compiler output";
-                    if (dxcResult.HasOutput(DxcOutKind.Errors))
-                    {
-                        IDxcBlob debugBlob = dxcResult.GetOutput(DxcOutKind.Errors);
-                        if (debugBlob.AsBytes().Length > 0) debugOutput = Encoding.UTF8.GetString(debugBlob.AsBytes());
-                        debugBlob.Dispose();
-                    }
+            string debugOutput = string.Empty;
 
-                    // Get compiled bytecode and output compilation
-                    byte[] bytecode = dxcResult.GetObjectBytecode().ToArray();
-                    Debug.WriteLine("----------------------------------------");
-                    Debug.WriteLine($"Division Shader Compiler:\nCompiled \"" +
-                        $"{translatedShader.ShaderTypeName}\", size: {bytecode.Length} bytes\n\n{debugOutput}");
-                    Debug.WriteLine("----------------------------------------");
-                    dxcResult.Dispose();
-                    return HLSLCompilationResult.Success(
-                        translatedShader.HLSLCode!,
-                        translatedShader.KernelNames,
-                        debugOutput,
-                        translatedShader.ShaderTypeName,
-                        bytecode
-                    );
-                }
-                else
-                {
-                    dxcResult.Dispose();
-                    return HLSLCompilationResult.Failure("No output object from DXC compiler", translatedShader.ShaderTypeName);
-                }
-            }
-            else
+            // Check for errors or warnings
+            if (errorBlob != null && errorBlob.AsBytes().Length > 0)
             {
-                // Compilation failed, get error messages
-                string errors = compilerStatus.Description ?? "Unknown compilation error";
-                if (dxcResult.HasOutput(DxcOutKind.Errors))
-                {
-                    IDxcBlob errorBlob = dxcResult.GetOutput(DxcOutKind.Errors);
-                    if (errorBlob.AsBytes().Length > 0) errors = Encoding.UTF8.GetString(errorBlob.AsBytes());
-                    errorBlob.Dispose();
-                }
+                debugOutput = Encoding.UTF8.GetString(errorBlob.AsBytes());
+                Debug.WriteLine(debugOutput);
+            }
+
+            if (compileResult.Failure) // Compilation failed
+            {
+                string errors = debugOutput;
+                if (string.IsNullOrEmpty(errors))
+                    errors = compileResult.Description ?? "Unknown compilation error";
+
                 Debug.WriteLine("----------------------------------------");
                 Debug.WriteLine($"Division Shader Compiler:\nFailed to compile \"{translatedShader.ShaderTypeName}\"\n\n{errors}");
                 Debug.WriteLine("----------------------------------------");
 
-                dxcResult.Dispose();
+                errorBlob?.Dispose();
+                codeBlob?.Dispose();
                 return HLSLCompilationResult.Failure(errors, translatedShader.ShaderTypeName);
             }
+
+            // Compilation succeeded - get the bytecode
+            byte[] bytecode = codeBlob!.AsBytes();
+
+            Debug.WriteLine("----------------------------------------");
+            Debug.WriteLine($"Division Shader Compiler:\nCompiled \"{translatedShader.ShaderTypeName}\", size: {bytecode.Length} bytes");
+            if (!string.IsNullOrEmpty(debugOutput)) Debug.WriteLine(debugOutput);
+            Debug.WriteLine("----------------------------------------");
+
+            codeBlob.Dispose();
+            errorBlob?.Dispose();
+            return HLSLCompilationResult.Success(
+                translatedShader.HLSLCode!,
+                translatedShader.KernelNames,
+                debugOutput,
+                translatedShader.ShaderTypeName,
+                bytecode
+            );
+
+            // DXC compiler, for the future:
+
+            //dxcCompilerOptions = new DxcCompilerOptions
+            //{
+            //    ShaderModel = DXCShaderModel,
+            //    OptimizationLevel = OptimizationLevel,
+            //    EnableDebugInfo = EnableDebugInfo,
+            //    WarningsAreErrors = false,
+            //    SkipValidation = false,
+            //};
+
+            //List<string> additionalArgs =
+            //[
+            //    "-Wall",
+            //];
+
+            //IDxcResult dxcResult = DxcCompiler.Compile(
+            //    DxcShaderStage.Compute,
+            //    translatedShader.HLSLCode!,
+            //    translatedShader.KernelNames.First(),
+            //    dxcCompilerOptions,
+            //    additionalArguments: [.. additionalArgs]
+            //);
+
+            //Result compilerStatus = dxcResult.GetStatus();
+            //if (compilerStatus.Success)
+            //{
+            //    if (dxcResult.HasOutput(DxcOutKind.Object))
+            //    {
+            //        // Compilation succeeded, get the bytecode
+            //        string debugOutput = compilerStatus.Description ?? "No compiler output";
+            //        if (dxcResult.HasOutput(DxcOutKind.Errors))
+            //        {
+            //            IDxcBlob debugBlob = dxcResult.GetOutput(DxcOutKind.Errors);
+            //            if (debugBlob.AsBytes().Length > 0) debugOutput = Encoding.UTF8.GetString(debugBlob.AsBytes());
+            //            debugBlob.Dispose();
+            //        }
+
+            //        // Get compiled bytecode and output compilation
+            //        byte[] bytecode = dxcResult.GetObjectBytecode().ToArray();
+            //        Debug.WriteLine("----------------------------------------");
+            //        Debug.WriteLine($"Division Shader Compiler:\nCompiled \"" +
+            //            $"{translatedShader.ShaderTypeName}\", size: {bytecode.Length} bytes\n\n{debugOutput}");
+            //        Debug.WriteLine("----------------------------------------");
+            //        dxcResult.Dispose();
+            //        return HLSLCompilationResult.Success(
+            //            translatedShader.HLSLCode!,
+            //            translatedShader.KernelNames,
+            //            debugOutput,
+            //            translatedShader.ShaderTypeName,
+            //            bytecode
+            //        );
+            //    }
+            //    else
+            //    {
+            //        dxcResult.Dispose();
+            //        return HLSLCompilationResult.Failure("No output object from DXC compiler", translatedShader.ShaderTypeName);
+            //    }
+            //}
+            //else
+            //{
+            //    // Compilation failed, get error messages
+            //    string errors = compilerStatus.Description ?? "Unknown compilation error";
+            //    if (dxcResult.HasOutput(DxcOutKind.Errors))
+            //    {
+            //        IDxcBlob errorBlob = dxcResult.GetOutput(DxcOutKind.Errors);
+            //        if (errorBlob.AsBytes().Length > 0) errors = Encoding.UTF8.GetString(errorBlob.AsBytes());
+            //        errorBlob.Dispose();
+            //    }
+            //    Debug.WriteLine("----------------------------------------");
+            //    Debug.WriteLine($"Division Shader Compiler:\nFailed to compile \"{translatedShader.ShaderTypeName}\"\n\n{errors}");
+            //    Debug.WriteLine("----------------------------------------");
+
+            //    dxcResult.Dispose();
+            //    return HLSLCompilationResult.Failure(errors, translatedShader.ShaderTypeName);
+            //}
         }
 
         public HLSLTranslationResult TranslateShader(Type shaderType)

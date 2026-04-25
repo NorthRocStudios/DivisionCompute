@@ -3,18 +3,6 @@ using DivisionTranslate;
 using DivisionTranslate.Graphics;
 
 [Shader("D:\\Visual Studio\\Projects\\DivisionTranslate\\DivisionTranslate\\TestShaders\\TestMathShader.cs")]
-public struct MyShader
-{
-    [Kernel(8, 8, 1)]
-    public void Execute(uint3 id)
-    {
-        float3 pos = new float3(id.x, id.y, id.z);
-        float dist = math.length(pos);
-        float result = math.sin(dist) * math.cos(dist);
-    }
-}
-
-[Shader("D:\\Visual Studio\\Projects\\DivisionTranslate\\DivisionTranslate\\TestShaders\\TestMathShader.cs")]
 public struct BasicMathShader
 {
     [Kernel]
