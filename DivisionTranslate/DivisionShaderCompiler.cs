@@ -56,33 +56,23 @@ namespace DivisionTranslate
                 out Blob? errorBlob
             );
 
-            string debugOutput = string.Empty;
-
-            // Check for errors or warnings
+            string debugOutput = string.Empty; // Check for errors or warnings
             if (errorBlob != null && errorBlob.AsBytes().Length > 0)
-            {
-                debugOutput = Encoding.UTF8.GetString(errorBlob.AsBytes());
-                Debug.WriteLine(debugOutput);
-            }
+                debugOutput = Encoding.UTF8.GetString(errorBlob.AsBytes()) ?? compileResult.Description ?? "No Additional Compilation Info";
 
             if (compileResult.Failure) // Compilation failed
             {
-                string errors = debugOutput;
-                if (string.IsNullOrEmpty(errors))
-                    errors = compileResult.Description ?? "Unknown compilation error";
-
                 Debug.WriteLine("----------------------------------------");
-                Debug.WriteLine($"Division Shader Compiler:\nFailed to compile \"{translatedShader.ShaderTypeName}\"\n\n{errors}");
+                Debug.WriteLine($"Division Shader Compiler:\nFailed to compile \"{translatedShader.ShaderTypeName}\"\n\n{debugOutput}");
                 Debug.WriteLine("----------------------------------------");
 
                 errorBlob?.Dispose();
                 codeBlob?.Dispose();
-                return HLSLCompilationResult.Failure(errors, translatedShader.ShaderTypeName);
+                return HLSLCompilationResult.Failure(debugOutput, translatedShader.ShaderTypeName);
             }
 
-            // Compilation succeeded - get the bytecode
+            // Compilation succeeded, get the bytecode
             byte[] bytecode = codeBlob!.AsBytes();
-
             Debug.WriteLine("----------------------------------------");
             Debug.WriteLine($"Division Shader Compiler:\nCompiled \"{translatedShader.ShaderTypeName}\", size: {bytecode.Length} bytes");
             if (!string.IsNullOrEmpty(debugOutput)) Debug.WriteLine(debugOutput);
