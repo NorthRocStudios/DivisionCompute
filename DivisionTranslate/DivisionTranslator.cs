@@ -1,4 +1,4 @@
-﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System.Text;
@@ -6,7 +6,7 @@ using System.Text;
 namespace DivisionTranslate
 {
     /// <summary>
-    /// Syntax walkder that translates C# source code to HLSL source code based on the ruleset defined for the Division Engine.
+    /// Syntax walker that translates C# source code to HLSL source code based on the ruleset defined for the Division Engine.
     /// </summary>
     /// <param name="semanticModel">Semantic model used for translation</param>
     public class DivisionTranslator(SemanticModel semanticModel) : CSharpSyntaxWalker
