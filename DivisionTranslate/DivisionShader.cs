@@ -1,4 +1,11 @@
-﻿using System.Text.RegularExpressions;
+﻿//
+// Copyright (c) 2026 Rex Woodfield and DivisionTranslate contributors
+//
+// This file is part of DivisionTranslate and is subject to the terms
+// of the DivisionTranslate License. See the LICENSE.txt file in the
+// project root for full license terms.
+//
+using System.Text.RegularExpressions;
 using Vortice.Direct3D11;
 
 namespace DivisionTranslate
