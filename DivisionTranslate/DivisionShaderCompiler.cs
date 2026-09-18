@@ -22,7 +22,7 @@ namespace DivisionTranslate
                 MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
                 MetadataReference.CreateFromFile(typeof(float3).Assembly.Location),
                 MetadataReference.CreateFromFile(typeof(ShaderAttribute).Assembly.Location),
-                MetadataReference.CreateFromFile(typeof(Graphics.Buffer<>).Assembly.Location),
+                //MetadataReference.CreateFromFile(typeof(Graphics.Buffer<>).Assembly.Location),
             ];
         }
 
