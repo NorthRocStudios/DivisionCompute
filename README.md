@@ -1,14 +1,14 @@
-# DivisionTranslate
+# DivisionCompute
 
-[![NuGet](https://img.shields.io/nuget/v/DivisionTranslate?label=NuGet&logo=nuget)](https://www.nuget.org/packages/NorthRoc.DivisionTranslate)
-[![NuGet Downloads](https://img.shields.io/nuget/dt/DivisionTranslate?label=Downloads&logo=nuget)](https://www.nuget.org/packages/NorthRoc.DivisionTranslate)
+[![NuGet](https://img.shields.io/nuget/v/DivisionCompute?label=NuGet&logo=nuget)](https://www.nuget.org/packages/NorthRoc.DivisionCompute)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/DivisionCompute?label=Downloads&logo=nuget)](https://www.nuget.org/packages/NorthRoc.DivisionCompute)
 [![.NET](https://img.shields.io/badge/.NET-10.0-purple)](https://dotnet.microsoft.com/)
-[![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/NorthRocStudios/DivisionTranslate)
+[![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/NorthRocStudios/DivisionCompute)
 [![GPU](https://img.shields.io/badge/GPU-Direct3D%2011-green)](https://learn.microsoft.com/en-us/windows/win32/direct3d11/atoc-dx-graphics-direct3d-11)
 
 **Write your compute shaders in C#. Run them anywhere.**
 
-DivisionTranslate is a source-to-source compiler and runtime that lets you write HLSL compute shaders directly in C#. It translates your C# code to HLSL at runtime, compiles it, and executes it on the GPU using Direct3D 11. It's designed as a drop-in replacement for [ComputeSharp](https://github.com/Sergio0694/ComputeSharp), offering you full control over the pipeline without being locked into a specific runtime.
+DivisionCompute is a source-to-source compiler and runtime that lets you write HLSL compute shaders directly in C#. It translates your C# code to HLSL at runtime, compiles it, and executes it on the GPU using Direct3D 11. It's designed as a drop-in replacement for [ComputeSharp](https://github.com/Sergio0694/ComputeSharp), offering you full control over the pipeline without being locked into a specific runtime.
 
 This library is part of the [Division Engine](https://github.com/NorthRocStudios/DivisionEngine) project.
 
@@ -29,14 +29,14 @@ This library is part of the [Division Engine](https://github.com/NorthRocStudios
 
 ### Installation
 
-You can install DivisionTranslate via NuGet:
+You can install DivisionCompute via NuGet:
 
 ```bash
-dotnet add package NorthRoc.DivisionTranslate
+dotnet add package NorthRoc.DivisionCompute
 ```
 
 ## 💖 Support
 
-If you want to support DivisionTranslate and the rest of the Division Engine ecosystem, sponsor me on GitHub:
+If you want to support DivisionCompute and the rest of the Division Engine ecosystem, sponsor me on GitHub:
 
 [![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?style=flat&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Rex-J-W)
