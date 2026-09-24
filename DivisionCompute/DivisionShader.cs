@@ -1,8 +1,8 @@
 ﻿//
-// Copyright (c) 2026 Rex Woodfield and DivisionTranslate contributors
+// Copyright (c) 2026 Rex Woodfield and DivisionCompute contributors
 //
-// This file is part of DivisionTranslate and is subject to the terms
-// of the DivisionTranslate License. See the LICENSE.txt file in the
+// This file is part of DivisionCompute and is subject to the terms
+// of the DivisionCompute License. See the LICENSE.txt file in the
 // project root for full license terms.
 //
 using DivisionEngine;

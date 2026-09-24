@@ -5,16 +5,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
-    <Title>Division Translate</Title>
+    <Title>Division Compute</Title>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageId>NorthRoc.$(AssemblyName)</PackageId>
     <Version>0.1.0</Version>
     <Authors>Rex Woodfield</Authors>
     <Company>NorthRoc Studios</Company>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <Description>DivisionTranslate is a source-to-source compiler and runtime that lets you write HLSL compute shaders directly in C#</Description>
-    <RepositoryUrl>https://github.com/NorthRocStudios/DivisionTranslate</RepositoryUrl>
-    <PackageTags>compiler;hlsl;shader;translate;gpu;cpu; csharp;windows</PackageTags>
+    <Description>DivisionCompute is a source-to-source compiler and runtime that lets you write HLSL compute shaders directly in C#</Description>
+    <RepositoryUrl>https://github.com/NorthRocStudios/DivisionCompute</RepositoryUrl>
+    <PackageTags>compiler;hlsl;shader;translate;compute;gpu;cpu;csharp;windows</PackageTags>
     <PackageReleaseNotes>Initial release</PackageReleaseNotes>
     <Copyright>Copyright (c) 2026 Rex Woodfield and NorthRoc Studios contributors</Copyright>
     <RootNamespace>DivisionEngine</RootNamespace>
