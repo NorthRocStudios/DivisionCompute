@@ -5,10 +5,6 @@
 // of the DivisionTranslate License. See the LICENSE.txt file in the
 // project root for full license terms.
 //
-using System;
-using System.Collections.Generic;
-using System.Text;
-
 namespace DivisionEngine
 {
     ///// <summary>

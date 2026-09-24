@@ -5,9 +5,8 @@
 // of the DivisionTranslate License. See the LICENSE.txt file in the
 // project root for full license terms.
 //
+using DivisionEngine;
 using DivisionEngine.MathLib;
-using DivisionTranslate;
-using DivisionTranslate.Graphics;
 
 [Shader("D:\\Visual Studio\\Projects\\DivisionTranslate\\DivisionTranslate\\TestShaders\\TestMathShader.cs")]
 public struct BasicMathShader

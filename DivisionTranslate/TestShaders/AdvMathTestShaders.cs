@@ -5,8 +5,8 @@
 // of the DivisionTranslate License. See the LICENSE.txt file in the
 // project root for full license terms.
 //
+using DivisionEngine;
 using DivisionEngine.MathLib;
-using DivisionTranslate;
 
 [Shader("D:\\Visual Studio\\Projects\\DivisionTranslate\\DivisionTranslate\\TestShaders\\AdvMathTestShaders.cs")]
 public struct ComplexControlFlowShader
