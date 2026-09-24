@@ -36,7 +36,6 @@ namespace DivisionEngine
         /// Translates C# source code to HLSL source code.
         /// </summary>
         /// <param name="shaderStruct">The struct containing the shader</param>
-        /// <param name="kernelMethod">Entering method systax (must have [Kernel] attribute)</param>
         /// <returns>HLSL source code</returns>
         public string Translate(StructDeclarationSyntax shaderStruct)
         {
@@ -44,27 +43,43 @@ namespace DivisionEngine
             List<MethodDeclarationSyntax> inlineFuncs = FindAllInlineFunctions(shaderStruct);
             CollectFields(shaderStruct);
 
-            // Translate inline functions separately
             foreach (MethodDeclarationSyntax func in inlineFuncs) TranslateInlineFunction(func);
 
-            // Note: do not need #pragma kernel directives - this is a unity specific feature
-
             hlsl.AppendLine();
-            foreach (string structDecl in structDeclarations) hlsl.AppendLine(structDecl); // Add struct declarations
-            foreach (string func in inlineFunctions) hlsl.AppendLine(func); // Add inline functions
+            foreach (string structDecl in structDeclarations) hlsl.AppendLine(structDecl);
+            foreach (string func in inlineFunctions) hlsl.AppendLine(func);
 
-            // Add resource & variable declarations
+            // Resource declarations
             foreach (string resource in resourceDeclarations) hlsl.AppendLine(resource);
+
+            // Emit a default sampler whenever any read-only Texture2D exists.
+            // The HLSL Sample/SampleLevel intrinsics require one; we wire it to s0
+            // so it doesn't collide with the t/u/b register slots
+            if (UsesReadOnlyTexture2D())
+                hlsl.AppendLine("SamplerState DivisionDefaultSampler : register(s0);");
+
             if (resourceDeclarations.Count > 0 && variableDeclarations.Count > 0) hlsl.AppendLine();
             foreach (string variable in variableDeclarations) hlsl.AppendLine(variable);
             if ((resourceDeclarations.Count > 0 || variableDeclarations.Count > 0) && kernels.Count > 0) hlsl.AppendLine();
-            
-            for (int i = 0; i < kernels.Count; i++) // Add each kernel
+
+            for (int i = 0; i < kernels.Count; i++)
             {
                 if (i > 0) hlsl.AppendLine();
                 TranslateKernel(kernels[i]);
             }
             return hlsl.ToString();
+        }
+
+        /// <summary>
+        /// True if any [ShaderResource] field is a read-only Texture2D&lt;T&gt;
+        /// (as opposed to RWTexture2D&lt;T&gt;, which doesn't sample).
+        /// </summary>
+        private bool UsesReadOnlyTexture2D()
+        {
+            foreach (string decl in resourceDeclarations)
+                if (decl.TrimStart().StartsWith("Texture2D<"))
+                    return true;
+            return false;
         }
 
         /// <summary>
@@ -319,22 +334,60 @@ namespace DivisionEngine
         }
 
         /// <summary>
-        /// Translates invocating expressions like "math.length(pos)".
+        /// Translates invocation expressions like "math.length(pos)" or "input.Sample(uv)".
         /// </summary>
         public override void VisitInvocationExpression(InvocationExpressionSyntax node)
         {
+            IMethodSymbol? methodSymbol = semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
+
+            // Texture2D extension methods 
+            // C#: input.Sample(uv) → HLSL: input.Sample(DivisionDefaultSampler, uv)
+            // C#: input.Load(coord) → HLSL: input.Load(int3(coord, 0))
+            if (methodSymbol is { MethodKind: MethodKind.ReducedExtension } &&
+                methodSymbol.ContainingType?.Name == "Texture2DExtensions" &&
+                node.Expression is MemberAccessExpressionSyntax texAccess)
+            {
+                ExpressionSyntax textureInstance = texAccess.Expression;
+
+                // HLSL requires int3(coord, mipLevel)
+                if (methodSymbol.Name == "Load")
+                {
+                    Visit(textureInstance);
+                    hlsl.Append(".Load(int3(");
+                    Visit(node.ArgumentList.Arguments[0].Expression);
+                    hlsl.Append(", ");
+                    if (node.ArgumentList.Arguments.Count > 1)
+                        Visit(node.ArgumentList.Arguments[1].Expression);
+                    else
+                        hlsl.Append('0');
+                    hlsl.Append("))");
+                    return;
+                }
+
+                // Sample / SampleLevel
+                Visit(textureInstance);
+                hlsl.Append('.');
+                hlsl.Append(methodSymbol.Name);
+                hlsl.Append("(DivisionDefaultSampler");
+                for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
+                {
+                    hlsl.Append(", ");
+                    Visit(node.ArgumentList.Arguments[i].Expression);
+                }
+                hlsl.Append(')');
+                return;
+            }
+
+            // Struct method calls
             if (node.Expression is MemberAccessExpressionSyntax memberAccess)
             {
                 string methodName = memberAccess.Name.Identifier.Text;
                 ExpressionSyntax instance = memberAccess.Expression;
 
-                // Check if the method belongs to a struct type
-                IMethodSymbol? methodSymbol = semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
                 if (methodSymbol?.ContainingType?.TypeKind == TypeKind.Struct)
                 {
-                    // This is a struct method call - translate to function call with instance as first param
                     hlsl.Append($"{methodName}(");
-                    Visit(instance); // Pass the instance as first parameter
+                    Visit(instance);
                     if (node.ArgumentList.Arguments.Count > 0)
                     {
                         hlsl.Append(", ");
@@ -349,35 +402,33 @@ namespace DivisionEngine
                 }
             }
 
+            // Free functions (math.*, inline shader functions)
             SymbolInfo symbolInfo = semanticModel.GetSymbolInfo(node);
             if (symbolInfo.Symbol is IMethodSymbol method)
             {
-                // Check if math function - output just the name
-                if (method.ContainingType?.Name == "math") hlsl.Append(method.Name);
-                else hlsl.Append(method.Name);
-
-                hlsl.Append('('); // Open argument list
+                hlsl.Append(method.Name);
+                hlsl.Append('(');
                 for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
                 {
                     if (i > 0) hlsl.Append(", ");
                     Visit(node.ArgumentList.Arguments[i].Expression);
                 }
-                hlsl.Append(')'); // Close argument list
+                hlsl.Append(')');
             }
             else
             {
-                // Fallback: try to detect math. pattern from syntax
-                if (node.Expression is MemberAccessExpressionSyntax memberAccessFallback &&
-                    memberAccessFallback.Expression.ToString() == "math")
+                // Fallback: math. pattern from raw syntax
+                if (node.Expression is MemberAccessExpressionSyntax fallback &&
+                    fallback.Expression.ToString() == "math")
                 {
-                    hlsl.Append(memberAccessFallback.Name.Identifier.Text);
-                    hlsl.Append('('); // Open argument list
+                    hlsl.Append(fallback.Name.Identifier.Text);
+                    hlsl.Append('(');
                     for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
                     {
                         if (i > 0) hlsl.Append(", ");
                         Visit(node.ArgumentList.Arguments[i].Expression);
                     }
-                    hlsl.Append(')'); // Close argument list
+                    hlsl.Append(')');
                 }
                 else hlsl.Append(node.ToString());
             }

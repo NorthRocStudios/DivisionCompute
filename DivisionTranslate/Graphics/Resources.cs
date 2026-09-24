@@ -9,7 +9,7 @@ using DivisionEngine.MathLib;
 
 namespace DivisionEngine.Graphics
 {
-    // NOTE: These are compile-only markers. Their bodies never execute —
+    // NOTE: These are compile-only markers. Their bodies never execute -
     // Roslyn walks the shader struct's syntax tree to translate it to HLSL,
     // and then we bind real D3D11 resources by field name at dispatch time.
     // The indexers exist only so the C# in the shader struct compiles cleanly.

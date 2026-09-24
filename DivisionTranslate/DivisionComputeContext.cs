@@ -41,7 +41,7 @@ namespace DivisionEngine
             Compiler = new DivisionShaderCompiler();
         }
 
-        /// <summary>Public now — Program.cs can print it.</summary>
+        /// <summary>Public now - Program.cs can print it.</summary>
         public static IEnumerable<(string name, uint slot, string kind)> GetResourceLayout(Type shaderType)
         {
             uint srvSlot = 0, uavSlot = 0, cbSlot = 0;
