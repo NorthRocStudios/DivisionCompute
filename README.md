@@ -1,5 +1,3 @@
-<div align="left">
-
 # DivisionTranslate
 
 [![NuGet](https://img.shields.io/nuget/v/DivisionTranslate?label=NuGet&logo=nuget)](https://www.nuget.org/packages/NorthRoc.DivisionTranslate)
@@ -7,8 +5,6 @@
 [![.NET](https://img.shields.io/badge/.NET-10.0-purple)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/NorthRocStudios/DivisionTranslate)
 [![GPU](https://img.shields.io/badge/GPU-Direct3D%2011-green)](https://learn.microsoft.com/en-us/windows/win32/direct3d11/atoc-dx-graphics-direct3d-11)
-
-</div>
 
 **Write your compute shaders in C#. Run them anywhere.**
 
