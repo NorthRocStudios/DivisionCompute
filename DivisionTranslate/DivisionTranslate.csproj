@@ -5,18 +5,35 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <Title>Division Translate</Title>
+    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+    <PackageId>NorthRoc.$(AssemblyName)</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Rex Woodfield</Authors>
+    <Company>NorthRoc Studios</Company>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Description>DivisionTranslate is a source-to-source compiler and runtime that lets you write HLSL compute shaders directly in C#</Description>
+    <RepositoryUrl>https://github.com/NorthRocStudios/DivisionTranslate</RepositoryUrl>
+    <PackageTags>compiler;hlsl;shader;translate;gpu;cpu; csharp;windows</PackageTags>
+    <PackageReleaseNotes>Initial release</PackageReleaseNotes>
+    <Copyright>Copyright (c) 2026 Rex Woodfield and NorthRoc Studios contributors</Copyright>
+    <RootNamespace>DivisionEngine</RootNamespace>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.CodeAnalysis" Version="5.9.0" />
-    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
-    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <None Include="..\README.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
   </ItemGroup>
 
   <ItemGroup>
-    <Reference Include="DivisionMath">
-      <HintPath>..\..\DivisionMath\DivisionMath\bin\Debug\net10.0\DivisionMath.dll</HintPath>
-    </Reference>
+    <PackageReference Include="Microsoft.CodeAnalysis" Version="5.9.0" />
+    <PackageReference Include="NorthRoc.DivisionMath" Version="0.2.0" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
   </ItemGroup>
 
 </Project>

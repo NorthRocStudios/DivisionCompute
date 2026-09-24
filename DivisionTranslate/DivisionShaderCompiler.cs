@@ -16,7 +16,7 @@ using System.Text;
 using Vortice.D3DCompiler;
 using Vortice.Direct3D;
 
-namespace DivisionTranslate
+namespace DivisionEngine
 {
     public class DivisionShaderCompiler
     {

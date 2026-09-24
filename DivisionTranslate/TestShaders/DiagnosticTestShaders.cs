@@ -7,7 +7,7 @@
 //
 using DivisionEngine.MathLib;
 
-namespace DivisionTranslate.TestShaders
+namespace DivisionEngine.TestShaders
 {
     [Shader("D:\\Visual Studio\\Projects\\DivisionTranslate\\DivisionTranslate\\TestShaders\\DiagnosticTestShaders.cs")]
     public struct DiagnosticTest1

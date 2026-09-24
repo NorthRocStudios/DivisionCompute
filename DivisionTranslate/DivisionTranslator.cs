@@ -11,7 +11,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System.Text;
 using Vortice.Direct3D11;
 
-namespace DivisionTranslate
+namespace DivisionEngine
 {
     /// <summary>
     /// Syntax walker that translates C# source code to HLSL source code based on the ruleset defined for the Division Engine.

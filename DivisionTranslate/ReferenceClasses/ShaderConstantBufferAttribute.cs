@@ -5,7 +5,7 @@
 // of the DivisionTranslate License. See the LICENSE.txt file in the
 // project root for full license terms.
 //
-namespace DivisionTranslate.ReferenceClasses
+namespace DivisionEngine.ReferenceClasses
 {
     [AttributeUsage(AttributeTargets.Field, Inherited = false, AllowMultiple = false)]
     public sealed class ShaderConstantBufferAttribute(int slot) : Attribute

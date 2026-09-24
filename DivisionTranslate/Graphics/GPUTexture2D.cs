@@ -9,7 +9,7 @@ using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 
-namespace DivisionTranslate.Graphics
+namespace DivisionEngine.Graphics
 {
     /// <summary>
     /// Owns a D3D11 Texture2D plus its UAV (write) and SRV (read) views.

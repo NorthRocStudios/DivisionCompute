@@ -7,7 +7,7 @@
 //
 using DivisionEngine.MathLib;
 
-namespace DivisionTranslate.Graphics
+namespace DivisionEngine.Graphics
 {
     // NOTE: These are compile-only markers. Their bodies never execute —
     // Roslyn walks the shader struct's syntax tree to translate it to HLSL,

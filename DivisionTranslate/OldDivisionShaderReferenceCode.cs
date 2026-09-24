@@ -9,7 +9,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
-namespace DivisionTranslate
+namespace DivisionEngine
 {
     ///// <summary>
     ///// Represents a compiled compute shader, mirroring the Unity ComputeShader API.

@@ -5,15 +5,16 @@
 // of the DivisionTranslate License. See the LICENSE.txt file in the
 // project root for full license terms.
 //
+using DivisionEngine.Graphics;
 using DivisionEngine.MathLib;
-using DivisionTranslate.Graphics;
+using DivisionTranslate;
 using SharpGen.Runtime;
 using System.Reflection;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 
-namespace DivisionTranslate
+namespace DivisionEngine
 {
     /// <summary>
     /// Owns the D3D11 device/context and provides a ComputeSharp-style

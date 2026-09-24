@@ -5,6 +5,7 @@
 // of the DivisionTranslate License. See the LICENSE.txt file in the
 // project root for full license terms.
 //
+using DivisionEngine;
 using System.Text.RegularExpressions;
 using Vortice.Direct3D11;
 

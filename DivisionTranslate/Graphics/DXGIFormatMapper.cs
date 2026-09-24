@@ -8,7 +8,7 @@
 using DivisionEngine.MathLib;
 using Vortice.DXGI;
 
-namespace DivisionTranslate.Graphics
+namespace DivisionEngine.Graphics
 {
     /// <summary>
     /// Maps DivisionMath CPU types to the matching typed DXGI format. Only used for
