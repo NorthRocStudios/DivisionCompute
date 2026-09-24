@@ -363,3 +363,9 @@ MigrationBackup/
 FodyWeavers.xsd
 /TranslatorConsole/TranslatorConsole.csproj
 /TranslatorConsole/Program.cs
+/TranslatorConsole/TestShaders/AdvMathTestShaders.cs
+/TranslatorConsole/TestShaders/DiagnosticTestShaders.cs
+/TranslatorConsole/TestShaders/TestMathShader.cs
+/TranslatorConsole/TestComputeFiles/TestCompute.compute
+/TranslatorConsole/ReferenceClasses/CSharpToHLSLTranslator.cs
+/TranslatorConsole/ReferenceClasses/ShaderConstantBufferAttribute.cs
