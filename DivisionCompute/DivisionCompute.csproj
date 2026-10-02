@@ -32,7 +32,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis" Version="5.9.0" />
-    <PackageReference Include="NorthRoc.DivisionMath" Version="0.2.0" />
+    <PackageReference Include="NorthRoc.DivisionMath" Version="0.2.1" />
     <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
   </ItemGroup>
