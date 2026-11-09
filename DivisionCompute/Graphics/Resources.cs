@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) 2026 Rex Woodfield and DivisionCompute contributors
 //
 // This file is part of DivisionCompute and is subject to the terms
@@ -110,30 +110,73 @@ namespace DivisionEngine.Graphics
     /// Read-only structured buffer of arbitrary structs. Translates to HLSL
     /// <c>StructuredBuffer&lt;T&gt;</c>.
     /// </summary>
-    public sealed class StructuredBuffer<T>
+    /// <typeparam name="T">
+    /// An unmanaged, sequential struct. See the structured-buffer documentation for
+    /// the supported field types and layout rules.
+    /// </typeparam>
+    /// <remarks>
+    /// Bind a <see cref="ReadOnlyBuffer{T}"/> or the read view of a
+    /// <see cref="ReadWriteBuffer{T}"/> to this field with
+    /// <see cref="DivisionShader.SetReadOnlyBuffer{T}(string, ReadOnlyBuffer{T})"/>.
+    /// </remarks>
+    public sealed class StructuredBuffer<T> where T : unmanaged
     {
+        /// <summary>Reads the element at <paramref name="index"/>.</summary>
         public T this[int index] => throw new NotSupportedException();
+
+        /// <summary>Reads the element at <paramref name="index"/>.</summary>
         public T this[uint index] => throw new NotSupportedException();
+
+        /// <summary>
+        /// Number of elements in the buffer. Translates to a <c>GetDimensions</c>
+        /// helper in HLSL.
+        /// </summary>
         public int Length => throw new NotSupportedException();
+
+        /// <summary>
+        /// Alias for <see cref="Length"/>.
+        /// </summary>
+        public int Count => throw new NotSupportedException();
     }
 
     /// <summary>
     /// Read-write structured buffer of arbitrary structs. Translates to HLSL
     /// <c>RWStructuredBuffer&lt;T&gt;</c>.
     /// </summary>
-    public sealed class RWStructuredBuffer<T>
+    /// <typeparam name="T">
+    /// An unmanaged, sequential struct. See the structured-buffer documentation for
+    /// the supported field types and layout rules.
+    /// </typeparam>
+    /// <remarks>
+    /// Bind a <see cref="ReadWriteBuffer{T}"/> to this field with
+    /// <see cref="DivisionShader.SetReadWriteBuffer{T}(string, ReadWriteBuffer{T})"/>.
+    /// </remarks>
+    public sealed class RWStructuredBuffer<T> where T : unmanaged
     {
+        /// <summary>Reads or writes the element at <paramref name="index"/>.</summary>
         public T this[int index]
         {
             get => throw new NotSupportedException();
             set => throw new NotSupportedException();
         }
+
+        /// <summary>Reads or writes the element at <paramref name="index"/>.</summary>
         public T this[uint index]
         {
             get => throw new NotSupportedException();
             set => throw new NotSupportedException();
         }
+
+        /// <summary>
+        /// Number of elements in the buffer. Translates to a <c>GetDimensions</c>
+        /// helper in HLSL.
+        /// </summary>
         public int Length => throw new NotSupportedException();
+
+        /// <summary>
+        /// Alias for <see cref="Length"/>.
+        /// </summary>
+        public int Count => throw new NotSupportedException();
     }
 
     /// <summary>

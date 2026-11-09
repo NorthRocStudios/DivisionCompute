@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) 2026 Rex Woodfield and DivisionCompute contributors
 //
 // This file is part of DivisionCompute and is subject to the terms
@@ -23,26 +23,17 @@ namespace DivisionEngine
     /// that can be loaded into a D3D11 compute shader.
     /// </summary>
     /// <remarks>
-    /// This class is stateless beyond its metadata-reference cache; a single instance
-    /// can be reused across many shader types and threads.
+    /// A single instance can be reused across many shader types and threads. The
+    /// Roslyn metadata references are built per shader so element structs declared
+    /// in other files or assemblies can be resolved.
     /// </remarks>
     public class DivisionShaderCompiler
     {
-        private readonly List<MetadataReference> assemblyRefs;
-
         /// <summary>
-        /// Creates a new compiler with the assembly references needed to resolve
-        /// <c>float3</c>, <c>ShaderAttribute</c>, and the rest of the shader marker types.
+        /// Creates a new compiler. Metadata references are resolved per shader.
         /// </summary>
         public DivisionShaderCompiler()
         {
-            assemblyRefs = // Add necessary assemblies
-            [
-                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
-                MetadataReference.CreateFromFile(typeof(float3).Assembly.Location),
-                MetadataReference.CreateFromFile(typeof(ShaderAttribute).Assembly.Location),
-                //MetadataReference.CreateFromFile(typeof(Graphics.Buffer<>).Assembly.Location),
-            ];
         }
 
         /// <summary>
@@ -75,47 +66,79 @@ namespace DivisionEngine
         /// </returns>
         public static HLSLCompilationResult CompileHLSL(HLSLTranslationResult translatedShader)
         {
-            // Use the overload that returns separate code and error blobs
-            Result compileResult = Compiler.Compile(
-                translatedShader.HLSLCode!,
-                translatedShader.KernelNames.First(),
-                translatedShader.ShaderTypeName,
-                "cs_5_0",
-                out Blob? codeBlob,
-                out Blob? errorBlob
-            );
+            ArgumentNullException.ThrowIfNull(translatedShader);
 
-            string debugOutput = string.Empty; // Check for errors or warnings
-            if (errorBlob != null && errorBlob.AsBytes().Length > 0)
-                debugOutput = Encoding.UTF8.GetString(errorBlob.AsBytes()) ?? compileResult.Description ?? "No Additional Compilation Info";
+            if (!translatedShader.IsSuccess || string.IsNullOrWhiteSpace(translatedShader.HLSLCode))
+                return HLSLCompilationResult.Failure(
+                    translatedShader.ErrorMessage ?? "No HLSL source was produced.",
+                    translatedShader.ShaderTypeName);
 
-            if (compileResult.Failure) // Compilation failed
+            if (translatedShader.KernelNames.Count == 0)
+                return HLSLCompilationResult.Failure(
+                    $"Shader '{translatedShader.ShaderTypeName}' has no kernels to compile.",
+                    translatedShader.ShaderTypeName);
+
+            // D3DCompile compiles one entry point per call. Compile every kernel
+            // separately so dispatching a non-first kernel does not silently run
+            // the first kernel's bytecode.
+            var kernelBytecodes = new List<byte[]>(translatedShader.KernelNames.Count);
+            var debugOutput = new StringBuilder();
+
+            foreach (string kernelName in translatedShader.KernelNames)
             {
-                Debug.WriteLine("----------------------------------------");
-                Debug.WriteLine($"Division Shader Compiler:\nFailed to compile \"{translatedShader.ShaderTypeName}\"\n\n{debugOutput}");
-                Debug.WriteLine("----------------------------------------");
+                Result compileResult = Compiler.Compile(
+                    translatedShader.HLSLCode,
+                    kernelName,
+                    translatedShader.ShaderTypeName,
+                    "cs_5_0",
+                    out Blob? codeBlob,
+                    out Blob? errorBlob);
 
+                string kernelDebug = string.Empty;
+                if (errorBlob is not null && errorBlob.AsBytes().Length > 0)
+                {
+                    kernelDebug = Encoding.UTF8.GetString(errorBlob.AsBytes())
+                        ?? compileResult.Description
+                        ?? "No additional compilation info";
+                }
+
+                if (compileResult.Failure || codeBlob is null)
+                {
+                    if (string.IsNullOrWhiteSpace(kernelDebug))
+                        kernelDebug = compileResult.Description ?? "No additional compilation info";
+
+                    Debug.WriteLine("----------------------------------------");
+                    Debug.WriteLine($"Division Shader Compiler:\nFailed to compile \"{translatedShader.ShaderTypeName}\" kernel \"{kernelName}\"\n\n{kernelDebug}");
+                    Debug.WriteLine("----------------------------------------");
+
+                    errorBlob?.Dispose();
+                    codeBlob?.Dispose();
+                    return HLSLCompilationResult.Failure(
+                        $"Kernel '{kernelName}' failed to compile:\n{kernelDebug}",
+                        translatedShader.ShaderTypeName);
+                }
+
+                byte[] bytecode = codeBlob.AsBytes();
+                kernelBytecodes.Add(bytecode);
+                debugOutput.AppendLine($"Kernel '{kernelName}': {bytecode.Length} bytes");
+                if (!string.IsNullOrWhiteSpace(kernelDebug))
+                    debugOutput.AppendLine(kernelDebug.TrimEnd());
+
+                codeBlob.Dispose();
                 errorBlob?.Dispose();
-                codeBlob?.Dispose();
-                return HLSLCompilationResult.Failure(debugOutput, translatedShader.ShaderTypeName);
             }
 
-            // Compilation succeeded, get the bytecode
-            byte[] bytecode = codeBlob!.AsBytes();
             Debug.WriteLine("----------------------------------------");
-            Debug.WriteLine($"Division Shader Compiler:\nCompiled \"{translatedShader.ShaderTypeName}\", size: {bytecode.Length} bytes");
-            if (!string.IsNullOrEmpty(debugOutput)) Debug.WriteLine(debugOutput);
+            Debug.WriteLine($"Division Shader Compiler:\nCompiled \"{translatedShader.ShaderTypeName}\" ({kernelBytecodes.Count} kernel(s))");
+            Debug.WriteLine(debugOutput.ToString().TrimEnd());
             Debug.WriteLine("----------------------------------------");
 
-            codeBlob.Dispose();
-            errorBlob?.Dispose();
             return HLSLCompilationResult.Success(
-                translatedShader.HLSLCode!,
+                translatedShader.HLSLCode,
                 translatedShader.KernelNames,
-                debugOutput,
+                debugOutput.ToString().TrimEnd(),
                 translatedShader.ShaderTypeName,
-                bytecode
-            );
+                kernelBytecodes);
 
             // DXC compiler, for the future:
 
@@ -202,43 +225,132 @@ namespace DivisionEngine
         /// <returns>Either the translated HLSL or a diagnostic message describing the failure.</returns>
         public HLSLTranslationResult TranslateShader(Type shaderType)
         {
-            string? sourcePath = GetSourceFilePath(shaderType);
-            if (sourcePath is null)
+            ArgumentNullException.ThrowIfNull(shaderType);
+
+            try
             {
-                string attrPath = shaderType.GetCustomAttribute<ShaderAttribute>()?.SourceFilePath
-                    ?? "(no [Shader] attribute)";
+                string? sourcePath = GetSourceFilePath(shaderType);
+                if (sourcePath is null)
+                {
+                    string attrPath = shaderType.GetCustomAttribute<ShaderAttribute>()?.SourceFilePath
+                        ?? "(no [Shader] attribute)";
+                    return HLSLTranslationResult.Failure(
+                        $"Could not locate the source file for shader '{shaderType.Name}'. " +
+                        $"Attribute path was \"{attrPath}\". " +
+                        $"Hint: use [Shader] with no arguments to let the compiler inject " +
+                        $"the correct path via [CallerFilePath].",
+                        shaderType.Name);
+                }
+
+                string sourceCode = File.ReadAllText(sourcePath);
+                SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, path: sourcePath);
+
+                CSharpCompilation compilation = CSharpCompilation.Create($"{shaderType.Name}_Compilation")
+                    .AddSyntaxTrees(syntaxTree)
+                    .AddReferences(BuildMetadataReferences(shaderType));
+
+                SemanticModel semanticModel = compilation.GetSemanticModel(syntaxTree);
+                SyntaxNode root = syntaxTree.GetRoot();
+                StructDeclarationSyntax? structDeclaration = FindStructDeclaration(root, shaderType.Name);
+                if (structDeclaration == null)
+                    return HLSLTranslationResult.Failure(
+                        $"Struct '{shaderType.Name}' not found in {sourcePath}",
+                        shaderType.Name);
+
+                List<string> kernelNames = FindAllKernelNames(structDeclaration, semanticModel);
+                if (kernelNames.Count == 0)
+                    return HLSLTranslationResult.Failure(
+                        $"No [Kernel] methods found in struct '{shaderType.Name}'",
+                        shaderType.Name);
+
+                DivisionTranslator translator = new DivisionTranslator(semanticModel, shaderType);
+                string hlslCode = translator.Translate(structDeclaration);
+                return HLSLTranslationResult.Success(hlslCode, kernelNames, shaderType.Name);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Division Shader Compiler: translation of '{shaderType.Name}' failed:\n{ex}");
                 return HLSLTranslationResult.Failure(
-                    $"Could not locate the source file for shader '{shaderType.Name}'. " +
-                    $"Attribute path was \"{attrPath}\". " +
-                    $"Hint: use [Shader] with no arguments to let the compiler inject " +
-                    $"the correct path via [CallerFilePath].",
+                    $"{ex.GetType().Name}: {ex.Message}",
                     shaderType.Name);
             }
+        }
 
-            string sourceCode = File.ReadAllText(sourcePath);
-            SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, path: sourcePath);
+        /// <summary>
+        /// Builds a Roslyn reference set that can resolve the shader type, its
+        /// field types, and element structs declared in other files or assemblies.
+        /// </summary>
+        private static List<MetadataReference> BuildMetadataReferences(Type shaderType)
+        {
+            var references = new List<MetadataReference>();
+            var referencePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var visitedAssemblies = new HashSet<Assembly>();
+            var visitedTypes = new HashSet<Type>();
 
-            CSharpCompilation compilation = CSharpCompilation.Create($"{shaderType.Name}_Compilation")
-                .AddSyntaxTrees(syntaxTree)
-                .AddReferences(assemblyRefs);
+            AddAssembly(typeof(object).Assembly);
+            AddAssembly(typeof(float3).Assembly);
+            AddAssembly(typeof(ShaderAttribute).Assembly);
+            AddAssembly(shaderType.Assembly);
 
-            SemanticModel semanticModel = compilation.GetSemanticModel(syntaxTree);
-            SyntaxNode root = syntaxTree.GetRoot();
-            StructDeclarationSyntax? structDeclaration = FindStructDeclaration(root, shaderType.Name);
-            if (structDeclaration == null)
-                return HLSLTranslationResult.Failure(
-                    $"Struct '{shaderType.Name}' not found in {sourcePath}",
-                    shaderType.Name);
+            foreach (FieldInfo field in shaderType.GetFields(
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                AddType(field.FieldType);
+            }
 
-            List<string> kernelNames = FindAllKernelNames(structDeclaration, semanticModel);
-            if (kernelNames.Count == 0)
-                return HLSLTranslationResult.Failure(
-                    $"No [Kernel] methods found in struct '{shaderType.Name}'",
-                    shaderType.Name);
+            return references;
 
-            DivisionTranslator translator = new DivisionTranslator(semanticModel);
-            string hlslCode = translator.Translate(structDeclaration);
-            return HLSLTranslationResult.Success(hlslCode, kernelNames, shaderType.Name);
+            void AddAssembly(Assembly assembly)
+            {
+                if (assembly.IsDynamic || !visitedAssemblies.Add(assembly))
+                    return;
+
+                string? location = assembly.Location;
+                if (string.IsNullOrEmpty(location) || !File.Exists(location))
+                    return;
+
+                if (!referencePaths.Add(location))
+                    return;
+
+                references.Add(MetadataReference.CreateFromFile(location));
+            }
+
+            void AddType(Type type)
+            {
+                if (!visitedTypes.Add(type))
+                    return;
+
+                if (type.IsGenericType)
+                {
+                    foreach (Type argument in type.GetGenericArguments())
+                        AddType(argument);
+                    return;
+                }
+
+                if (type.IsArray)
+                {
+                    if (type.GetElementType() is Type elementType)
+                        AddType(elementType);
+                    return;
+                }
+
+                if (type.IsPointer || type.IsByRef)
+                    return;
+
+                AddAssembly(type.Assembly);
+
+                if (type.IsPrimitive || type.IsEnum || type == typeof(string) || ShaderStructLayout.IsBuiltIn(type))
+                    return;
+
+                if (!type.IsValueType)
+                    return;
+
+                foreach (FieldInfo field in type.GetFields(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    AddType(field.FieldType);
+                }
+            }
         }
 
         private static StructDeclarationSyntax? FindStructDeclaration(SyntaxNode root, string structName) => root.DescendantNodes()

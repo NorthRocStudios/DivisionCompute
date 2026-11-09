@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) 2026 Rex Woodfield and DivisionCompute contributors
 //
 // This file is part of DivisionCompute and is subject to the terms
@@ -6,6 +6,7 @@
 // project root for full license terms.
 //
 using DivisionEngine;
+using DivisionEngine.Graphics;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Vortice.Direct3D11;
@@ -14,9 +15,10 @@ namespace DivisionEngine
 {
 
     /// <summary>
-    /// Runtime wrapper around a compiled D3D11 compute shader. Holds the bytecode-backed
-    /// <see cref="ID3D11ComputeShader"/>, the kernel-name → index map, thread-group
-    /// sizes, and the resource layout that maps C# field names to HLSL register slots.
+    /// Runtime wrapper around a compiled D3D11 compute shader. Holds one
+    /// bytecode-backed <see cref="ID3D11ComputeShader"/> per kernel, the
+    /// kernel-name → index map, thread-group sizes, and the resource layout that
+    /// maps C# field names to HLSL register slots.
     /// </summary>
     /// <remarks>
     /// Created via <see cref="DivisionComputeContext.CompileShader(Type)"/> or
@@ -26,7 +28,7 @@ namespace DivisionEngine
     /// </remarks>
     public partial class DivisionShader : IDisposable
     {
-        private readonly ID3D11ComputeShader _computeShader;
+        private readonly ID3D11ComputeShader[] _computeShaders;
         private readonly ID3D11DeviceContext _deviceContext;
         private readonly Dictionary<string, int> _kernelNameToIndex;
         private readonly Dictionary<int, (uint x, uint y, uint z)> _kernelThreadSizes;
@@ -56,11 +58,27 @@ namespace DivisionEngine
             ShaderName = result.ShaderTypeName;
             _deviceContext = context;
 
-            unsafe
+            if (result.KernelBytecodes.Count == 0)
+                throw new InvalidOperationException($"Compilation result for '{ShaderName}' contains no kernel bytecode.");
+
+            if (result.KernelBytecodes.Count != result.KernelNames.Count)
+                throw new InvalidOperationException(
+                    $"Compilation result for '{ShaderName}' has {result.KernelBytecodes.Count} bytecode blobs " +
+                    $"but {result.KernelNames.Count} kernel names.");
+
+            _computeShaders = new ID3D11ComputeShader[result.KernelBytecodes.Count];
+            for (int i = 0; i < result.KernelBytecodes.Count; i++)
             {
-                fixed (byte* ptr = result.Bytecode)
+                byte[] bytecode = result.KernelBytecodes[i];
+                if (bytecode.Length == 0)
+                    throw new InvalidOperationException($"Kernel '{result.KernelNames[i]}' has an empty bytecode blob.");
+
+                unsafe
                 {
-                    _computeShader = device.CreateComputeShader(ptr, (nuint)result.Bytecode!.Length);
+                    fixed (byte* ptr = bytecode)
+                    {
+                        _computeShaders[i] = device.CreateComputeShader(ptr, (nuint)bytecode.Length);
+                    }
                 }
             }
 
@@ -103,21 +121,67 @@ namespace DivisionEngine
         /// <summary>
         /// Binds an unordered-access view to the register slot of the named field.
         /// </summary>
-        public void SetUav(string fieldName, ID3D11UnorderedAccessView uav) => _uavs[fieldName] = uav;
+        public void SetUav(string fieldName, ID3D11UnorderedAccessView uav)
+        {
+            ArgumentNullException.ThrowIfNull(uav);
+            ValidateBinding(fieldName, "UAV");
+            _uavs[fieldName] = uav;
+        }
 
         /// <summary>
         /// Binds a shader-resource view to the register slot of the named field.
         /// </summary>
-        public void SetSrv(string fieldName, ID3D11ShaderResourceView srv) => _srvs[fieldName] = srv;
+        public void SetSrv(string fieldName, ID3D11ShaderResourceView srv)
+        {
+            ArgumentNullException.ThrowIfNull(srv);
+            ValidateBinding(fieldName, "SRV");
+            _srvs[fieldName] = srv;
+        }
 
         /// <summary>
         /// Binds a constant buffer to the register slot of the named field.
         /// </summary>
-        public void SetConstantBuffer(string fieldName, ID3D11Buffer buffer) => _cbuffers[fieldName] = buffer;
+        public void SetConstantBuffer(string fieldName, ID3D11Buffer buffer)
+        {
+            ArgumentNullException.ThrowIfNull(buffer);
+            ValidateBinding(fieldName, "CB");
+            _cbuffers[fieldName] = buffer;
+        }
 
         /// <summary>
-        /// Binds all previously-set resources to their slots, dispatches the kernel,
-        /// and unbinds UAVs so that a subsequent readback copy can succeed.
+        /// Binds a <see cref="ReadOnlyBuffer{T}"/> to a <c>StructuredBuffer&lt;T&gt;</c>
+        /// shader field.
+        /// </summary>
+        public void SetReadOnlyBuffer<T>(string fieldName, ReadOnlyBuffer<T> buffer) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(buffer);
+            SetSrv(fieldName, buffer.Srv);
+        }
+
+        /// <summary>
+        /// Binds the read view of a <see cref="ReadWriteBuffer{T}"/> to a
+        /// <c>StructuredBuffer&lt;T&gt;</c> shader field.
+        /// </summary>
+        public void SetReadOnlyBuffer<T>(string fieldName, ReadWriteBuffer<T> buffer) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(buffer);
+            SetSrv(fieldName, buffer.Srv);
+        }
+
+        /// <summary>
+        /// Binds a <see cref="ReadWriteBuffer{T}"/> to an
+        /// <c>RWStructuredBuffer&lt;T&gt;</c> shader field.
+        /// </summary>
+        public void SetReadWriteBuffer<T>(string fieldName, ReadWriteBuffer<T> buffer) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(buffer);
+            SetUav(fieldName, buffer.Uav);
+        }
+
+        /// <summary>
+        /// Clears the shader's resource slots, binds all previously-set resources,
+        /// dispatches the selected kernel, and unbinds UAVs so that a subsequent
+        /// readback copy can succeed.
         /// </summary>
         /// <param name="kernelIndex">Index returned by <see cref="FindKernel"/>.</param>
         /// <param name="threadGroupsX">Number of thread groups along X.</param>
@@ -137,7 +201,12 @@ namespace DivisionEngine
                 Debug.WriteLine($"  Total threads: {threadGroupsX * sizes.x}, {threadGroupsY * sizes.y}, {threadGroupsZ * sizes.z}");
             }
 
-            _deviceContext.CSSetShader(_computeShader);
+            _deviceContext.CSSetShader(_computeShaders[kernelIndex]);
+
+            // Clear every slot used by this shader before binding. Otherwise a
+            // resource omitted from this dispatch could remain bound from the
+            // previous one, which makes bugs depend on dispatch order.
+            ClearResourceSlots();
 
             foreach (var (name, slot, kind) in _layout)
             {
@@ -161,19 +230,72 @@ namespace DivisionEngine
             _deviceContext.Dispatch(threadGroupsX, threadGroupsY, threadGroupsZ);
             _deviceContext.Flush();
 
-            // CRITICAL: unbind UAVs so the staging copy in readback can succeed.
-            // D3D11 refuses to copy a resource that is still bound as a UAV.
-            foreach (var (_, slot, kind) in _layout)
-                if (kind == "UAV")
-                    _deviceContext.CSSetUnorderedAccessView(slot, (ID3D11UnorderedAccessView)null!);
+            // Release every slot after the dispatch. In particular, D3D11 refuses
+            // to copy a resource that is still bound as a UAV, and clearing SRVs
+            // keeps a later SetData from touching a still-bound resource.
+            ClearResourceSlots();
 
             if (Verbose) Debug.WriteLine("  Dispatch complete");
+        }
+
+        /// <summary>
+        /// Releases every register slot used by this shader's resource layout.
+        /// </summary>
+        private void ClearResourceSlots()
+        {
+            foreach (var (_, slot, kind) in _layout)
+            {
+                switch (kind)
+                {
+                    case "UAV":
+                        _deviceContext.CSSetUnorderedAccessView(slot, (ID3D11UnorderedAccessView)null!);
+                        break;
+                    case "SRV":
+                        _deviceContext.CSSetShaderResource(slot, (ID3D11ShaderResourceView)null!);
+                        break;
+                    case "CB":
+                        _deviceContext.CSSetConstantBuffer(slot, (ID3D11Buffer)null!);
+                        break;
+                }
+            }
         }
 
         /// <inheritdoc/>
         public void Dispose()
         {
-            _computeShader?.Dispose();
+            foreach (ID3D11ComputeShader shader in _computeShaders)
+                shader?.Dispose();
+        }
+
+        /// <summary>
+        /// Verifies that a field exists in the resource layout and has the expected
+        /// kind. A layout-less shader (created through <see cref="FromCompilation"/>
+        /// without <see cref="SetResourceLayout"/>) skips this check.
+        /// </summary>
+        private void ValidateBinding(string fieldName, string expectedKind)
+        {
+            if (string.IsNullOrWhiteSpace(fieldName))
+                throw new ArgumentException("A resource field name is required.", nameof(fieldName));
+
+            if (_layout.Count == 0)
+                return;
+
+            foreach (var (name, _, kind) in _layout)
+            {
+                if (!string.Equals(name, fieldName, StringComparison.Ordinal))
+                    continue;
+
+                if (!string.Equals(kind, expectedKind, StringComparison.Ordinal))
+                    throw new ArgumentException(
+                        $"Shader '{ShaderName}' field '{fieldName}' is a {kind} resource, not {expectedKind}.",
+                        nameof(fieldName));
+
+                return;
+            }
+
+            throw new ArgumentException(
+                $"Shader '{ShaderName}' has no resource field named '{fieldName}'.",
+                nameof(fieldName));
         }
 
         private static (Dictionary<string, int> nameToIndex, Dictionary<int, (uint x, uint y, uint z)> threadSizes)

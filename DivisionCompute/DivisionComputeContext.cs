@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) 2026 Rex Woodfield and DivisionCompute contributors
 //
 // This file is part of DivisionCompute and is subject to the terms
@@ -70,22 +70,56 @@ namespace DivisionEngine
         /// <param name="shaderType">The C# shader struct type.</param>
         public static IEnumerable<(string name, uint slot, string kind)> GetResourceLayout(Type shaderType)
         {
+            ArgumentNullException.ThrowIfNull(shaderType);
+
             uint srvSlot = 0, uavSlot = 0, cbSlot = 0;
 
             foreach (FieldInfo field in shaderType.GetFields(
                 BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance))
             {
-                if (!field.GetCustomAttributes().Any(a => a is ShaderResourceAttribute))
+                if (field.GetCustomAttribute<ShaderResourceAttribute>() is null)
                     continue;
 
-                string typeName = field.FieldType.Name; // e.g. "RWTexture2D`1"
+                Type fieldType = field.FieldType;
 
-                if (typeName is "RWTexture2D`1" or "RWBuffer`1" or "RWStructuredBuffer`1")
+                // The translator injects a default sampler for Texture2D sampling.
+                // An explicitly declared Sampler is emitted but not bound yet.
+                if (fieldType == typeof(Sampler))
+                    continue;
+
+                if (!fieldType.IsGenericType)
+                    throw new NotSupportedException(
+                        $"Shader resource field '{field.Name}' has unsupported type '{fieldType.Name}'. " +
+                        "Use Buffer<T>, RWBuffer<T>, StructuredBuffer<T>, RWStructuredBuffer<T>, " +
+                        "Texture2D<T>, RWTexture2D<T>, Texture3D<T>, RWTexture3D<T>, or ConstantBuffer<T>.");
+
+                Type definition = fieldType.GetGenericTypeDefinition();
+
+                if (definition == typeof(RWTexture2D<>) ||
+                    definition == typeof(RWTexture3D<>) ||
+                    definition == typeof(RWBuffer<>) ||
+                    definition == typeof(RWStructuredBuffer<>))
+                {
                     yield return (field.Name, uavSlot++, "UAV");
-                else if (typeName is "Texture2D`1" or "Buffer`1" or "StructuredBuffer`1")
+                }
+                else if (definition == typeof(Texture2D<>) ||
+                         definition == typeof(Texture3D<>) ||
+                         definition == typeof(Buffer<>) ||
+                         definition == typeof(StructuredBuffer<>))
+                {
                     yield return (field.Name, srvSlot++, "SRV");
-                else if (typeName is "ConstantBuffer`1")
+                }
+                else if (definition == typeof(ConstantBuffer<>))
+                {
                     yield return (field.Name, cbSlot++, "CB");
+                }
+                else
+                {
+                    throw new NotSupportedException(
+                        $"Shader resource field '{field.Name}' has unsupported type '{fieldType.Name}'. " +
+                        "Use Buffer<T>, RWBuffer<T>, StructuredBuffer<T>, RWStructuredBuffer<T>, " +
+                        "Texture2D<T>, RWTexture2D<T>, Texture3D<T>, RWTexture3D<T>, or ConstantBuffer<T>.");
+                }
             }
         }
 
@@ -96,8 +130,11 @@ namespace DivisionEngine
         /// <param name="shaderType">The corresponding C# shader struct type.</param>
         public DivisionShader CreateShader(HLSLCompilationResult compilation, Type shaderType)
         {
+            // Materialize the layout first so an unsupported resource field fails
+            // before a GPU shader object is created.
+            var layout = GetResourceLayout(shaderType).ToArray();
             var shader = DivisionShader.FromCompilation(compilation, Device, Context);
-            shader.SetResourceLayout(GetResourceLayout(shaderType));
+            shader.SetResourceLayout(layout);
             return shader;
         }
 
@@ -127,6 +164,32 @@ namespace DivisionEngine
         /// <param name="height">Height in pixels; must be positive.</param>
         public GPUTexture2D<float4> CreateRWTexture2D(int width, int height)
             => new(Device, width, height, Format.R32G32B32A32_Float);
+
+        /// <summary>
+        /// Creates a read-only structured buffer and uploads <paramref name="data"/>.
+        /// The buffer can be bound to a <c>StructuredBuffer&lt;T&gt;</c> shader field.
+        /// </summary>
+        /// <typeparam name="T">An unmanaged, sequential element struct.</typeparam>
+        /// <param name="data">The initial element data. Must not be empty.</param>
+        public ReadOnlyBuffer<T> CreateReadOnlyBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
+            => new(Device, data);
+
+        /// <summary>
+        /// Creates a zero-initialized read-write structured buffer. The buffer can be
+        /// bound to an <c>RWStructuredBuffer&lt;T&gt;</c> shader field.
+        /// </summary>
+        /// <typeparam name="T">An unmanaged, sequential element struct.</typeparam>
+        /// <param name="count">Number of elements; must be positive.</param>
+        public ReadWriteBuffer<T> CreateReadWriteBuffer<T>(int count) where T : unmanaged
+            => new(Device, count);
+
+        /// <summary>
+        /// Creates a read-write structured buffer and uploads <paramref name="data"/>.
+        /// </summary>
+        /// <typeparam name="T">An unmanaged, sequential element struct.</typeparam>
+        /// <param name="data">The initial element data. Must not be empty.</param>
+        public ReadWriteBuffer<T> CreateReadWriteBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
+            => new(Device, data);
 
         /// <summary>
         /// Copies the contents of a GPU texture into a CPU-side <c>float4[]</c>.

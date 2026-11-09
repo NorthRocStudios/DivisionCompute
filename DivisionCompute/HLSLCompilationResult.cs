@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) 2026 Rex Woodfield and DivisionCompute contributors
 //
 // This file is part of DivisionCompute and is subject to the terms
@@ -38,23 +38,35 @@ namespace DivisionEngine
         public string ShaderTypeName { get; }
 
         /// <summary>
-        /// Compiled bytecode.
+        /// Compiled bytecode for the first kernel. Kept for compatibility; use
+        /// <see cref="KernelBytecodes"/> when the shader contains multiple kernels.
         /// </summary>
-        public byte[]? Bytecode { get; }
+        public byte[]? Bytecode => KernelBytecodes.Count > 0 ? KernelBytecodes[0] : null;
 
-        private HLSLCompilationResult(bool isSuccess, string hlslCode, string debugMessage,
-                               List<string> kernelNames, string shaderTypeName, byte[]? bytecode)
+        /// <summary>
+        /// Compiled DXBC bytecode for every kernel, in the same order as
+        /// <see cref="KernelNames"/>.
+        /// </summary>
+        public IReadOnlyList<byte[]> KernelBytecodes { get; }
+
+        private HLSLCompilationResult(
+            bool isSuccess,
+            string hlslCode,
+            string debugMessage,
+            List<string> kernelNames,
+            string shaderTypeName,
+            IReadOnlyList<byte[]> kernelBytecodes)
         {
             IsSuccess = isSuccess;
             HLSLCode = hlslCode;
             DebugMessage = debugMessage;
             KernelNames = kernelNames ?? [];
             ShaderTypeName = shaderTypeName;
-            Bytecode = bytecode;
+            KernelBytecodes = kernelBytecodes;
         }
 
         /// <summary>
-        /// Build a successful HLSLCompilationResult container.
+        /// Build a successful HLSLCompilationResult container for a single kernel.
         /// </summary>
         /// <param name="hlslCode">HLSL source code</param>
         /// <param name="kernelNames">Names of each compiled kernel</param>
@@ -62,8 +74,50 @@ namespace DivisionEngine
         /// <param name="shaderTypeName">Shader type name</param>
         /// <param name="bytecode">The compiled HLSL bytecode</param>
         /// <returns>Successful HLSL compilation container</returns>
-        public static HLSLCompilationResult Success(string hlslCode, List<string> kernelNames, string debugMessage, string shaderTypeName, byte[] bytecode) =>
-            new HLSLCompilationResult(true, hlslCode, debugMessage, kernelNames, shaderTypeName, bytecode);
+        public static HLSLCompilationResult Success(
+            string hlslCode,
+            List<string> kernelNames,
+            string debugMessage,
+            string shaderTypeName,
+            byte[] bytecode)
+            => Success(hlslCode, kernelNames, debugMessage, shaderTypeName, new[] { bytecode });
+
+        /// <summary>
+        /// Build a successful HLSLCompilationResult container for one or more kernels.
+        /// </summary>
+        /// <param name="hlslCode">HLSL source code</param>
+        /// <param name="kernelNames">Names of each compiled kernel</param>
+        /// <param name="debugMessage">Debug output of the compiler</param>
+        /// <param name="shaderTypeName">Shader type name</param>
+        /// <param name="kernelBytecodes">Compiled bytecode for each kernel, in kernel order</param>
+        /// <returns>Successful HLSL compilation container</returns>
+        public static HLSLCompilationResult Success(
+            string hlslCode,
+            List<string> kernelNames,
+            string debugMessage,
+            string shaderTypeName,
+            IReadOnlyList<byte[]> kernelBytecodes)
+        {
+            ArgumentNullException.ThrowIfNull(hlslCode);
+            ArgumentNullException.ThrowIfNull(kernelNames);
+            ArgumentNullException.ThrowIfNull(kernelBytecodes);
+
+            if (kernelNames.Count != kernelBytecodes.Count)
+                throw new ArgumentException(
+                    $"Received {kernelBytecodes.Count} kernel bytecode blobs for {kernelNames.Count} kernel names.",
+                    nameof(kernelBytecodes));
+
+            if (kernelBytecodes.Count == 0)
+                throw new ArgumentException("At least one kernel bytecode is required.", nameof(kernelBytecodes));
+
+            return new HLSLCompilationResult(
+                true,
+                hlslCode,
+                debugMessage,
+                kernelNames,
+                shaderTypeName,
+                kernelBytecodes);
+        }
 
         /// <summary>
         /// Build a failed HLSLCompilationResult container.
@@ -71,7 +125,7 @@ namespace DivisionEngine
         /// <param name="debugMessage">Debug message of the compilation failure</param>
         /// <param name="shaderTypeName">Shader type name</param>
         /// <returns>Failed HLSL compilation container</returns>
-        public static HLSLCompilationResult Failure(string debugMessage, string shaderTypeName = "Unknown") => 
-            new HLSLCompilationResult(false, string.Empty, debugMessage, [], shaderTypeName, null);
+        public static HLSLCompilationResult Failure(string debugMessage, string shaderTypeName = "Unknown")
+            => new(false, string.Empty, debugMessage, [], shaderTypeName, []);
     }
 }

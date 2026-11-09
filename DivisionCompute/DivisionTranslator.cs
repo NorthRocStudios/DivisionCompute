@@ -5,10 +5,13 @@
 // of the DivisionCompute License. See the LICENSE.txt file in the
 // project root for full license terms.
 //
+using DivisionEngine.Graphics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System.Reflection;
 using System.Text;
+using TypeInfo = Microsoft.CodeAnalysis.TypeInfo;
 
 namespace DivisionEngine
 {
@@ -16,10 +19,17 @@ namespace DivisionEngine
     /// Syntax walker that translates C# source code to HLSL source code based on the ruleset defined for the Division Engine.
     /// </summary>
     /// <param name="semanticModel">Semantic model used for translation</param>
-    public class DivisionTranslator(SemanticModel semanticModel) : CSharpSyntaxWalker
+    /// <param name="shaderType">
+    /// Optional runtime type of the shader struct. When supplied, structured-buffer
+    /// element structs are resolved and emitted from metadata, so element types do
+    /// not have to be declared in the same source file as the shader.
+    /// </param>
+    public class DivisionTranslator(SemanticModel semanticModel, Type? shaderType = null) : CSharpSyntaxWalker
     {
         // Translation vars
         private readonly SemanticModel semanticModel = semanticModel;
+        private readonly Dictionary<string, FieldInfo> shaderFields = BuildShaderFields(shaderType);
+        private readonly Dictionary<string, Type> knownTypes = BuildKnownTypes(shaderType);
         private readonly StringBuilder hlsl = new StringBuilder();
         private int indentLvl = 0;
         private int? threadsX, threadsY, threadsZ;
@@ -31,6 +41,7 @@ namespace DivisionEngine
         private readonly List<string> inlineFunctions = [];
         private readonly List<string> kernelNames = [];
         private readonly HashSet<string> processedStructs = [];
+        private readonly Dictionary<string, string> bufferLengthHelpers = [];
 
         /// <summary>
         /// Translates C# source code to HLSL source code.
@@ -45,11 +56,21 @@ namespace DivisionEngine
 
             foreach (MethodDeclarationSyntax func in inlineFuncs) TranslateInlineFunction(func);
 
-            hlsl.AppendLine();
-            foreach (string structDecl in structDeclarations) hlsl.AppendLine(structDecl);
-            foreach (string func in inlineFunctions) hlsl.AppendLine(func);
+            // Translate kernel bodies before emitting anything. Their bodies can
+            // discover structured-buffer Length/Count uses, which must be emitted
+            // as helper definitions before the kernels that call them.
+            var kernelDefinitions = new List<string>(kernels.Count);
+            foreach (MethodDeclarationSyntax kernel in kernels)
+                kernelDefinitions.Add(TranslateKernelToString(kernel));
 
-            // Resource declarations
+            hlsl.AppendLine();
+
+            // Structs must be declared before any resource, function, or global that
+            // mentions them. Reflection-emitted structs are added dependencies-first.
+            foreach (string structDecl in structDeclarations) hlsl.AppendLine(structDecl);
+
+            // Resources and globals must be declared before inline functions that
+            // reference them; HLSL requires declarations before use.
             foreach (string resource in resourceDeclarations) hlsl.AppendLine(resource);
 
             // Emit a default sampler whenever any read-only Texture2D exists.
@@ -58,16 +79,39 @@ namespace DivisionEngine
             if (UsesReadOnlyTexture2D())
                 hlsl.AppendLine("SamplerState DivisionDefaultSampler : register(s0);");
 
-            if (resourceDeclarations.Count > 0 && variableDeclarations.Count > 0) hlsl.AppendLine();
+            foreach (string helper in bufferLengthHelpers.Values) hlsl.AppendLine(helper);
             foreach (string variable in variableDeclarations) hlsl.AppendLine(variable);
-            if ((resourceDeclarations.Count > 0 || variableDeclarations.Count > 0) && kernels.Count > 0) hlsl.AppendLine();
+            foreach (string func in inlineFunctions) hlsl.AppendLine(func);
 
-            for (int i = 0; i < kernels.Count; i++)
+            if (kernelDefinitions.Count > 0) hlsl.AppendLine();
+
+            for (int i = 0; i < kernelDefinitions.Count; i++)
             {
                 if (i > 0) hlsl.AppendLine();
-                TranslateKernel(kernels[i]);
+                hlsl.Append(kernelDefinitions[i]);
             }
             return hlsl.ToString();
+        }
+
+        /// <summary>
+        /// Translates a kernel into a standalone string while preserving the main
+        /// output buffer.
+        /// </summary>
+        private string TranslateKernelToString(MethodDeclarationSyntax kernelMethod)
+        {
+            string original = hlsl.ToString();
+            int oldIndent = indentLvl;
+
+            hlsl.Clear();
+            indentLvl = 0;
+            TranslateKernel(kernelMethod);
+            string result = hlsl.ToString();
+
+            hlsl.Clear();
+            hlsl.Append(original);
+            indentLvl = oldIndent;
+
+            return result;
         }
 
         /// <summary>
@@ -525,8 +569,23 @@ namespace DivisionEngine
         /// </summary>
         public override void VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
         {
+            string memberName = node.Name.Identifier.Text;
+
+            // StructuredBuffer exposes GetDimensions, Load, and operator[], not a
+            // Length/Count property. Route the C# convenience properties through a
+            // generated helper so the shader author can keep using buffer.Length.
+            if (memberName is "Length" or "Count" &&
+                TryGetStructuredBufferField(node.Expression, out string fieldName, out string bufferTypeName))
+            {
+                EnsureBufferLengthHelper(fieldName, bufferTypeName);
+                hlsl.Append($"DivisionBufferLength_{fieldName}(");
+                Visit(node.Expression);
+                hlsl.Append(')');
+                return;
+            }
+
             Visit(node.Expression);
-            hlsl.Append($".{node.Name.Identifier.Text}");
+            hlsl.Append($".{memberName}");
         }
 
         /// <summary>
@@ -583,6 +642,16 @@ namespace DivisionEngine
         private void TranslateStructIfNeeded(INamedTypeSymbol structSymbol)
         {
             string structName = structSymbol.Name;
+
+            // Prefer the runtime type when it is known. Reflection gives us the
+            // actual field order and layout, and works even when the struct is
+            // declared outside the shader's source file.
+            if (knownTypes.TryGetValue(structName, out Type? runtimeType))
+            {
+                TranslateRuntimeStructIfNeeded(runtimeType);
+                return;
+            }
+
             if (processedStructs.Contains(structName)) return;
             if (IsBuiltInType(structName)) return; // Skip built-in types
             processedStructs.Add(structName);
@@ -595,6 +664,26 @@ namespace DivisionEngine
                     break;
                 }
             }
+        }
+
+        /// <summary>
+        /// Emits an HLSL struct declaration from a runtime type, recursively emitting
+        /// nested structs first. Built-in scalar/vector types are skipped.
+        /// </summary>
+        private void TranslateRuntimeStructIfNeeded(Type type)
+        {
+            if (ShaderStructLayout.IsBuiltIn(type) || type.IsPrimitive || type.IsEnum)
+                return;
+
+            string structName = ShaderStructLayout.GetHlslTypeName(type);
+            if (!processedStructs.Add(structName)) return;
+
+            // Emit nested element structs before this one so the generated HLSL
+            // never references a struct that has not been declared yet.
+            foreach (FieldInfo field in ShaderStructLayout.GetSerializableFields(type))
+                TranslateRuntimeStructIfNeeded(field.FieldType);
+
+            structDeclarations.Add(ShaderStructLayout.BuildStructDeclaration(type));
         }
 
         /// <summary>
@@ -749,6 +838,16 @@ namespace DivisionEngine
         private static string ConvertType(ITypeSymbol? typeSymbol)
         {
             if (typeSymbol == null) return "unknown";
+
+            if (typeSymbol.TypeKind == TypeKind.Enum && typeSymbol is INamedTypeSymbol enumType)
+                return ConvertType(enumType.EnumUnderlyingType);
+
+            if (typeSymbol.Name is "Vector2" or "Vector3" or "Vector4" &&
+                typeSymbol.ContainingNamespace?.ToDisplayString() == "System.Numerics")
+            {
+                return $"float{typeSymbol.Name[^1]}";
+            }
+
             return typeSymbol.SpecialType switch
             {
                 SpecialType.System_Single => "float",
@@ -773,10 +872,11 @@ namespace DivisionEngine
 
                 TypeSyntax fieldType = field.Declaration.Type;
                 string fieldName = field.Declaration.Variables.First().Identifier.Text;
+                shaderFields.TryGetValue(fieldName, out FieldInfo? runtimeField);
 
                 if (isShaderResource) // This is a GPU resource (buffer, texture, etc.)
                 {
-                    string? hlslDeclaration = TranslateResourceField(fieldType, fieldName);
+                    string? hlslDeclaration = TranslateResourceField(fieldType, fieldName, runtimeField);
                     if (hlslDeclaration != null) resourceDeclarations.Add(hlslDeclaration);
                 }
                 else
@@ -798,9 +898,10 @@ namespace DivisionEngine
         /// </summary>
         /// <param name="fieldType">C# resource field type syntax</param>
         /// <param name="fieldName">Field name</param>
+        /// <param name="runtimeField">Optional metadata for the field, used to resolve element structs that live outside the shader source file.</param>
         /// <returns>HLSL resouce field type syntax</returns>
         /// <exception cref="NotSupportedException">If the type is not supported as a shader resource</exception>
-        private string? TranslateResourceField(TypeSyntax fieldType, string fieldName)
+        private string? TranslateResourceField(TypeSyntax fieldType, string fieldName, FieldInfo? runtimeField)
         {
             if (fieldType is IdentifierNameSyntax identifier) // Test for sampler type
             {
@@ -813,15 +914,39 @@ namespace DivisionEngine
             {
                 string genericName = generic.Identifier.Text;
 
-                // Handle the element type
-                TypeSyntax typeArg = generic.TypeArgumentList.Arguments[0];
-                ITypeSymbol? typeSymbol = semanticModel.GetTypeInfo(typeArg).Type;
-                string elementType = ConvertType(typeSymbol);
+                // Resolve the element type from metadata when possible. This is what
+                // allows StructuredBuffer<MyDto> to work when MyDto is declared in a
+                // different source file (or a different assembly) than the shader.
+                Type? runtimeElementType = null;
+                if (runtimeField is not null && runtimeField.FieldType.IsGenericType)
+                {
+                    Type[] typeArguments = runtimeField.FieldType.GetGenericArguments();
+                    if (typeArguments.Length == 1)
+                        runtimeElementType = typeArguments[0];
+                }
 
-                // If StructuredBuffer, translate the element struct
-                if ((genericName == "StructuredBuffer" || genericName == "RWStructuredBuffer") &&
-                    typeSymbol is INamedTypeSymbol namedType && namedType.TypeKind == TypeKind.Struct)
-                    TranslateStructIfNeeded(namedType);
+                string elementType;
+                if (runtimeElementType is not null)
+                {
+                    if (genericName is "StructuredBuffer" or "RWStructuredBuffer")
+                    {
+                        ShaderStructLayout.ValidateElementType(runtimeElementType);
+                        TranslateRuntimeStructIfNeeded(runtimeElementType);
+                    }
+
+                    elementType = ShaderStructLayout.GetHlslTypeName(runtimeElementType);
+                }
+                else
+                {
+                    TypeSyntax typeArg = generic.TypeArgumentList.Arguments[0];
+                    ITypeSymbol? typeSymbol = semanticModel.GetTypeInfo(typeArg).Type;
+                    elementType = ConvertType(typeSymbol);
+
+                    // If StructuredBuffer, translate the element struct
+                    if ((genericName == "StructuredBuffer" || genericName == "RWStructuredBuffer") &&
+                        typeSymbol is INamedTypeSymbol namedType && namedType.TypeKind == TypeKind.Struct)
+                        TranslateStructIfNeeded(namedType);
+                }
 
                 return genericName switch // Map to HLSL
                 {
@@ -840,6 +965,161 @@ namespace DivisionEngine
 
             throw new NotSupportedException($"ShaderResource field '{fieldName}' must be a generic type " +
                 $"(Buffer<T>, Texture2D<T>, etc.) or Sampler. Got: {fieldType.GetType().Name}");
+        }
+
+        /// <summary>
+        /// Resolves a member-access receiver to a structured-buffer field and builds
+        /// the HLSL type used by the generated length helper.
+        /// </summary>
+        private bool TryGetStructuredBufferField(
+            ExpressionSyntax expression,
+            out string fieldName,
+            out string bufferTypeName)
+        {
+            fieldName = string.Empty;
+            bufferTypeName = string.Empty;
+
+            string? candidateName = expression switch
+            {
+                IdentifierNameSyntax identifier => identifier.Identifier.Text,
+                MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax } member => member.Name.Identifier.Text,
+                _ => null,
+            };
+
+            if (candidateName is null)
+                return false;
+
+            if (shaderFields.TryGetValue(candidateName, out FieldInfo? runtimeField))
+            {
+                Type fieldType = runtimeField.FieldType;
+                if (!fieldType.IsGenericType)
+                    return false;
+
+                Type definition = fieldType.GetGenericTypeDefinition();
+                if (definition != typeof(StructuredBuffer<>) &&
+                    definition != typeof(RWStructuredBuffer<>))
+                {
+                    return false;
+                }
+
+                string genericName = definition.Name[..definition.Name.IndexOf('`')];
+                Type elementType = fieldType.GetGenericArguments()[0];
+                fieldName = candidateName;
+                bufferTypeName = $"{genericName}<{ShaderStructLayout.GetHlslTypeName(elementType)}>";
+                return true;
+            }
+
+            // Fallback for callers that use the translator without a runtime type.
+            if (semanticModel.GetSymbolInfo(expression).Symbol is not IFieldSymbol fieldSymbol ||
+                fieldSymbol.Type is not INamedTypeSymbol namedType ||
+                namedType.TypeArguments.Length != 1 ||
+                namedType.Name is not ("StructuredBuffer" or "RWStructuredBuffer"))
+            {
+                return false;
+            }
+
+            fieldName = fieldSymbol.Name;
+            bufferTypeName = $"{namedType.Name}<{ConvertType(namedType.TypeArguments[0])}>";
+            return true;
+        }
+
+        /// <summary>
+        /// Generates the HLSL helper that implements the C# Length/Count property
+        /// through StructuredBuffer.GetDimensions.
+        /// </summary>
+        private void EnsureBufferLengthHelper(string fieldName, string bufferTypeName)
+        {
+            if (bufferLengthHelpers.ContainsKey(fieldName))
+                return;
+
+            bufferLengthHelpers[fieldName] =
+                $"int DivisionBufferLength_{fieldName}({bufferTypeName} buffer)\n" +
+                "{\n" +
+                "    uint count;\n" +
+                "    uint stride;\n" +
+                "    buffer.GetDimensions(count, stride);\n" +
+                "    return (int)count;\n" +
+                "}\n";
+        }
+
+        private static Dictionary<string, FieldInfo> BuildShaderFields(Type? shaderType)
+        {
+            var fields = new Dictionary<string, FieldInfo>(StringComparer.Ordinal);
+            if (shaderType is null)
+                return fields;
+
+            foreach (FieldInfo field in shaderType.GetFields(
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                fields[field.Name] = field;
+            }
+
+            return fields;
+        }
+
+        private static Dictionary<string, Type> BuildKnownTypes(Type? shaderType)
+        {
+            var types = new Dictionary<string, Type>(StringComparer.Ordinal);
+            if (shaderType is null)
+                return types;
+
+            foreach (FieldInfo field in shaderType.GetFields(
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                AddType(field.FieldType);
+            }
+
+            return types;
+
+            void AddType(Type type)
+            {
+                if (type.IsGenericType)
+                {
+                    foreach (Type argument in type.GetGenericArguments())
+                        AddType(argument);
+                    return;
+                }
+
+                if (type.IsArray)
+                {
+                    if (type.GetElementType() is Type elementType)
+                        AddType(elementType);
+                    return;
+                }
+
+                if (type.IsPointer || type.IsByRef || type.IsPrimitive || type == typeof(string))
+                    return;
+
+                if (type.IsEnum)
+                {
+                    types.TryAdd(type.Name, type);
+                    return;
+                }
+
+                if (!type.IsValueType)
+                    return;
+
+                if (types.TryGetValue(type.Name, out Type? existingType))
+                {
+                    if (existingType != type)
+                        throw new NotSupportedException(
+                            $"Two structured-buffer element types are named '{type.Name}'. " +
+                            "HLSL has no namespaces, so element and nested struct names must be unique.");
+
+                    return;
+                }
+
+                types[type.Name] = type;
+
+                if (ShaderStructLayout.IsBuiltIn(type))
+                    return;
+
+                foreach (FieldInfo field in type.GetFields(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    AddType(field.FieldType);
+                }
+            }
         }
 
         /// <summary>

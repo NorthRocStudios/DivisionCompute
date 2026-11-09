@@ -365,6 +365,11 @@ FodyWeavers.xsd
 /TranslatorConsole/Program.cs
 /TranslatorConsole/TestShaders/AdvMathTestShaders.cs
 /TranslatorConsole/TestShaders/DiagnosticTestShaders.cs
+/TranslatorConsole/TestShaders/InvalidStructuredBufferShader.cs
+/TranslatorConsole/TestShaders/MultiKernelTestShader.cs
+/TranslatorConsole/TestShaders/SDFObjectDTO.cs
+/TranslatorConsole/TestShaders/StaleBindingTestShader.cs
+/TranslatorConsole/TestShaders/StructuredBufferTestShader.cs
 /TranslatorConsole/TestShaders/TestMathShader.cs
 /TranslatorConsole/TestComputeFiles/TestCompute.compute
 /TranslatorConsole/ReferenceClasses/CSharpToHLSLTranslator.cs
