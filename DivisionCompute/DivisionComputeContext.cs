@@ -235,6 +235,16 @@ namespace DivisionEngine
         public RWStructuredBuffer<T> CreateRWStructuredBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
             => new(Device, data);
 
+        /// <summary>
+        /// Creates a constant buffer holding one value of <typeparamref name="T"/>.
+        /// Bind it to a <c>ConstantBuffer&lt;T&gt;</c> shader field with
+        /// <see cref="DivisionShader.SetConstantBuffer{T}(string, ConstantBuffer{T})"/>.
+        /// </summary>
+        /// <typeparam name="T">An unmanaged struct of scalars, vectors, or int/uint enums.</typeparam>
+        /// <param name="value">The initial contents.</param>
+        public ConstantBuffer<T> CreateConstantBuffer<T>(in T value) where T : unmanaged
+            => new(Device, value);
+
         /// <inheritdoc/>
         public void Dispose()
         {

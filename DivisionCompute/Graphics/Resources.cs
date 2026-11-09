@@ -172,12 +172,6 @@ namespace DivisionEngine.Graphics
     }
 
     /// <summary>
-    /// Constant (uniform) buffer. Translates to an HLSL <c>cbuffer</c> block on
-    /// <c>register(b0)</c>, <c>b1</c>, … in declaration order.
-    /// </summary>
-    public sealed class ConstantBuffer<T> { }
-
-    /// <summary>
     /// Sampler state marker. Emits an HLSL <c>SamplerState</c> declaration. Not
     /// currently used for anything by the runtime - read-only textures sample
     /// through the translator-injected <c>DivisionDefaultSampler</c>.

@@ -42,6 +42,7 @@ namespace DivisionEngine
         private readonly List<string> kernelNames = [];
         private readonly HashSet<string> processedStructs = [];
         private readonly Dictionary<string, string> bufferLengthHelpers = [];
+        private int cbufferSlot;
 
         /// <summary>
         /// Translates C# source code to HLSL source code.
@@ -367,14 +368,70 @@ namespace DivisionEngine
         {
             TypeInfo typeInfo = semanticModel.GetTypeInfo(node.Type); // Get the type being created
             string typeName = ConvertType(typeInfo.Type);
+            var arguments = node.ArgumentList!.Arguments;
+
+            // HLSL numeric constructors need one argument per component (or a set of
+            // vectors that add up to it). The scalar broadcast form float4(x) that
+            // DivisionMath supports does not compile under D3DCompile, so emit the
+            // cast form instead - it broadcasts and evaluates x exactly once.
+            if (arguments.Count == 1 &&
+                GetVectorComponentCount(typeInfo.Type) > 1 &&
+                IsScalarType(semanticModel.GetTypeInfo(arguments[0].Expression).Type))
+            {
+                hlsl.Append($"({typeName})(");
+                Visit(arguments[0].Expression);
+                hlsl.Append(')');
+                return;
+            }
 
             hlsl.Append($"{typeName}("); // Open argument list
-            for (int i = 0; i < node.ArgumentList!.Arguments.Count; i++) // Visit each argument
+            for (int i = 0; i < arguments.Count; i++) // Visit each argument
             {
                 if (i > 0) hlsl.Append(", ");
-                Visit(node.ArgumentList.Arguments[i].Expression);
+                Visit(arguments[i].Expression);
             }
             hlsl.Append(')'); // Close argument list
+        }
+
+        /// <summary>
+        /// Returns the number of components of an HLSL vector type, or 0 when the
+        /// type is not a vector.
+        /// </summary>
+        private static int GetVectorComponentCount(ITypeSymbol? type)
+        {
+            if (type is null) return 0;
+
+            if (type.ContainingNamespace?.ToDisplayString() == "System.Numerics" &&
+                type.Name is "Vector2" or "Vector3" or "Vector4")
+            {
+                return type.Name[^1] - '0';
+            }
+
+            string name = type.Name;
+            if (name.Length >= 2 && name[^1] is '2' or '3' or '4')
+            {
+                string prefix = name[..^1];
+                if (prefix is "float" or "int" or "uint" or "double" or "bool" or "half")
+                    return name[^1] - '0';
+            }
+
+            return 0;
+        }
+
+        /// <summary>
+        /// True when the type is a scalar that HLSL can broadcast into a vector.
+        /// </summary>
+        private static bool IsScalarType(ITypeSymbol? type)
+        {
+            if (type is null) return false;
+            if (type.TypeKind == TypeKind.Enum) return true;
+
+            return type.SpecialType is
+                SpecialType.System_Single or
+                SpecialType.System_Double or
+                SpecialType.System_Int32 or
+                SpecialType.System_UInt32 or
+                SpecialType.System_Boolean;
         }
 
         /// <summary>
@@ -570,6 +627,24 @@ namespace DivisionEngine
         public override void VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
         {
             string memberName = node.Name.Identifier.Text;
+
+            // ConstantBuffer<T> values are read as cbuffer.Value.field in C# but the
+            // generated HLSL exposes them as flat cbuffer members. Rewrite the access
+            // to the prefixed member name the cbuffer declaration used.
+            if (node.Expression is MemberAccessExpressionSyntax valueAccess &&
+                valueAccess.Name.Identifier.Text == "Value" &&
+                TryGetConstantBufferField(valueAccess.Expression, out string cbufferName))
+            {
+                hlsl.Append($"{cbufferName}_{memberName}");
+                return;
+            }
+
+            // Reading or passing the whole buffer has no HLSL equivalent in shader
+            // model 5.0; fail loudly instead of emitting an invalid member name.
+            if (memberName == "Value" && TryGetConstantBufferField(node.Expression, out string wholeBuffer))
+                throw new NotSupportedException(
+                    $"Constant buffer '{wholeBuffer}' is read as a whole value. Read individual fields instead, " +
+                    $"for example {wholeBuffer}.Value.myField.");
 
             // StructuredBuffer exposes GetDimensions, Load, and operator[], not a
             // Length/Count property. Route the C# convenience properties through a
@@ -925,6 +1000,16 @@ namespace DivisionEngine
                         runtimeElementType = typeArguments[0];
                 }
 
+                if (genericName == "ConstantBuffer")
+                {
+                    if (runtimeElementType is null)
+                        throw new NotSupportedException(
+                            $"ShaderResource field '{fieldName}' is a ConstantBuffer<T>. The translator needs the runtime " +
+                            "element type, so compile the shader through DivisionComputeContext or DivisionShaderCompiler.");
+
+                    return BuildConstantBufferDeclaration(fieldName, runtimeElementType, cbufferSlot++);
+                }
+
                 string elementType;
                 if (runtimeElementType is not null)
                 {
@@ -965,6 +1050,65 @@ namespace DivisionEngine
 
             throw new NotSupportedException($"ShaderResource field '{fieldName}' must be a generic type " +
                 $"(Buffer<T>, Texture2D<T>, etc.) or Sampler. Got: {fieldType.GetType().Name}");
+        }
+
+        /// <summary>
+        /// Builds the HLSL <c>cbuffer</c> declaration for a <c>ConstantBuffer&lt;T&gt;</c>
+        /// field. Members are emitted flat (HLSL has no buffer member access in
+        /// shader model 5.0) and prefixed with the field name so two constant
+        /// buffers can share field names and locals can never shadow them.
+        /// </summary>
+        /// <param name="fieldName">The shader struct field name.</param>
+        /// <param name="elementType">The constant-buffer contents type.</param>
+        /// <param name="slot">The <c>b</c> register slot assigned in declaration order.</param>
+        private static string BuildConstantBufferDeclaration(string fieldName, Type elementType, int slot)
+        {
+            GpuConstantBufferLayout layout = GpuConstantBufferLayout.For(elementType);
+
+            var builder = new StringBuilder();
+            builder.AppendLine($"cbuffer {fieldName} : register(b{slot})");
+            builder.AppendLine("{");
+            foreach (ConstantBufferField field in layout.Fields)
+                builder.AppendLine($"    {ShaderStructLayout.GetHlslTypeName(field.Field.FieldType)} {fieldName}_{field.Field.Name};");
+            builder.AppendLine("};");
+            return builder.ToString();
+        }
+
+        /// <summary>
+        /// Resolves a member-access receiver to a <c>ConstantBuffer&lt;T&gt;</c> field.
+        /// </summary>
+        private bool TryGetConstantBufferField(ExpressionSyntax expression, out string fieldName)
+        {
+            fieldName = string.Empty;
+
+            string? candidateName = expression switch
+            {
+                IdentifierNameSyntax identifier => identifier.Identifier.Text,
+                MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax } member => member.Name.Identifier.Text,
+                _ => null,
+            };
+
+            if (candidateName is not null && shaderFields.TryGetValue(candidateName, out FieldInfo? runtimeField))
+            {
+                Type fieldType = runtimeField.FieldType;
+                if (fieldType.IsGenericType && fieldType.GetGenericTypeDefinition() == typeof(ConstantBuffer<>))
+                {
+                    fieldName = candidateName;
+                    return true;
+                }
+
+                return false;
+            }
+
+            // Fallback for callers that use the translator without a runtime type.
+            if (semanticModel.GetSymbolInfo(expression).Symbol is IFieldSymbol fieldSymbol &&
+                fieldSymbol.Type.Name == "ConstantBuffer")
+            {
+                fieldName = fieldSymbol.Name;
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>

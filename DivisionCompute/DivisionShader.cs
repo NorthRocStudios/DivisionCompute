@@ -119,6 +119,47 @@ namespace DivisionEngine
         }
 
         /// <summary>
+        /// The resource bindings of this shader, in declaration order: the C# field
+        /// name, its HLSL register slot, and its kind (<c>"UAV"</c>, <c>"SRV"</c>, or
+        /// <c>"CB"</c>). Tooling uses this to discover what a shader needs bound.
+        /// </summary>
+        public IReadOnlyList<(string name, uint slot, string kind)> ResourceLayout => _layout;
+
+        /// <summary>
+        /// Returns the thread-group size declared by the kernel's <c>[numthreads]</c>
+        /// attribute, so callers can compute dispatch group counts without
+        /// duplicating the kernel attribute.
+        /// </summary>
+        /// <param name="kernelIndex">Index returned by <see cref="FindKernel"/>.</param>
+        /// <exception cref="ArgumentException">If <paramref name="kernelIndex"/> is not valid.</exception>
+        public (uint x, uint y, uint z) GetThreadGroupSize(int kernelIndex)
+        {
+            if (!_kernelThreadSizes.TryGetValue(kernelIndex, out var sizes))
+                throw new ArgumentException($"Invalid kernel index: {kernelIndex}", nameof(kernelIndex));
+
+            return sizes;
+        }
+
+        /// <summary>
+        /// Dispatches a 2D kernel over <paramref name="width"/> x <paramref name="height"/>
+        /// threads, rounding the thread-group counts up. Equivalent to ComputeSharp's
+        /// <c>GraphicsDevice.For(width, height, shader)</c>.
+        /// </summary>
+        /// <param name="kernelIndex">Index returned by <see cref="FindKernel"/>.</param>
+        /// <param name="width">Total threads along X.</param>
+        /// <param name="height">Total threads along Y.</param>
+        public void Dispatch2D(int kernelIndex, int width, int height)
+        {
+            if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width), width, "Dispatch width must be positive.");
+            if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height), height, "Dispatch height must be positive.");
+
+            (uint x, uint y, uint z) = GetThreadGroupSize(kernelIndex);
+            uint groupsX = (uint)((width + (int)x - 1) / (int)x);
+            uint groupsY = (uint)((height + (int)y - 1) / (int)y);
+            Dispatch(kernelIndex, Math.Max(1u, groupsX), Math.Max(1u, groupsY), Math.Max(1u, z));
+        }
+
+        /// <summary>
         /// Binds an unordered-access view to the register slot of the named field.
         /// </summary>
         public void SetUav(string fieldName, ID3D11UnorderedAccessView uav)
@@ -146,6 +187,16 @@ namespace DivisionEngine
             ArgumentNullException.ThrowIfNull(buffer);
             ValidateBinding(fieldName, "CB");
             _cbuffers[fieldName] = buffer;
+        }
+
+        /// <summary>
+        /// Binds a <see cref="ConstantBuffer{T}"/> to a <c>ConstantBuffer&lt;T&gt;</c>
+        /// shader field.
+        /// </summary>
+        public void SetConstantBuffer<T>(string fieldName, ConstantBuffer<T> buffer) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(buffer);
+            SetConstantBuffer(fieldName, buffer.Buffer);
         }
 
         /// <summary>

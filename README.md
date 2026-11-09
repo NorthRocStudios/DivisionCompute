@@ -177,6 +177,62 @@ float4[] result = output.GetData(context.Context);
 - The old `ReadOnlyBuffer<T>`, `ReadWriteBuffer<T>`, and `GPUTexture2D<T>` wrappers
   have been removed. The shader field types are now the CPU types.
 
+## 🎛️ Constant Buffers
+
+Effect parameters live in a `ConstantBuffer<T>` field. C# reads them through
+`.Value`, and the translator flattens them into an HLSL `cbuffer`:
+
+```csharp
+public struct BlurConstants
+{
+    public float width;
+    public float height;
+    public float radius;
+    public float3 tint;
+}
+
+[Shader]
+public struct BlurShader
+{
+    [ShaderResource] public ConstantBuffer<BlurConstants> constants;
+    [ShaderResource] public RWTexture2D<float4> output;
+
+    [Kernel(8, 8, 1)]
+    public void Execute(uint3 id)
+    {
+        float sigma = constants.Value.radius * 0.5f;
+        output[new int2((int)id.x, (int)id.y)] = new float4(constants.Value.tint, sigma);
+    }
+}
+```
+
+```csharp
+BlurConstants constants = new() { width = 1280, height = 720, radius = 6f, tint = new float3(1f, 0.8f, 0.6f) };
+
+using ConstantBuffer<BlurConstants> cb = context.CreateConstantBuffer(in constants);
+using DivisionShader shader = context.CompileShader(typeof(BlurShader));
+
+shader.SetConstantBuffer("constants", cb);
+shader.Dispatch2D(shader.FindKernel("Execute"), 1280, 720);
+
+constants.radius = 12f;
+cb.SetData(context.Context, in constants); // upload new values, then dispatch again
+```
+
+- The translator emits `cbuffer constants : register(b0) { float constants_width; ... }`
+  and rewrites `constants.Value.width` to `constants_width`. The field-name prefix
+  keeps members unique across buffers and out of reach of shader locals.
+- Values are packed with the Direct3D constant-buffer rules (16-byte registers,
+  no member may straddle a register), and the CPU-side upload applies the same
+  layout, so the C# struct does **not** need manual padding.
+- Supported fields: `float`, `int`, `uint`, int/uint-backed enums, and DivisionMath
+  float/int/uint vectors. Nested structs, arrays, matrices, and `bool` are rejected
+  so a layout mismatch can never reach the GPU silently.
+- `Dispatch2D(kernel, width, height)` is the constant-buffer-friendly equivalent of
+  ComputeSharp's `Device.For(width, height, shader)`; it reads the thread-group
+  size from the `[Kernel]` attribute. `GetThreadGroupSize` and `ResourceLayout`
+  expose the same information for tooling.
+
 ## 💖 Support
 
 If you want to support DivisionCompute and the rest of the Division Engine ecosystem, sponsor me on GitHub:
