@@ -8,14 +8,14 @@
     <Title>Division Compute</Title>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageId>NorthRoc.$(AssemblyName)</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Authors>Rex Woodfield</Authors>
     <Company>NorthRoc Studios</Company>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Description>DivisionCompute is a source-to-source compiler and runtime that lets you write HLSL compute shaders directly in C#</Description>
     <RepositoryUrl>https://github.com/NorthRocStudios/DivisionCompute</RepositoryUrl>
     <PackageTags>compiler;hlsl;shader;translate;compute;gpu;cpu;csharp;windows</PackageTags>
-    <PackageReleaseNotes>Added StructuredBuffers, Texture3D, and migrated GPUTexture2D into Texture2D</PackageReleaseNotes>
+    <PackageReleaseNotes>Added support for Constant Buffers</PackageReleaseNotes>
     <Copyright>Copyright (c) 2026 Rex Woodfield and NorthRoc Studios contributors</Copyright>
     <RootNamespace>DivisionEngine</RootNamespace>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
