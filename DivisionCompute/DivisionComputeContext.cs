@@ -158,12 +158,56 @@ namespace DivisionEngine
         }
 
         /// <summary>
-        /// Allocates a <c>R32G32B32A32_Float</c> texture with matching UAV and SRV views.
+        /// Creates a read-only 2D texture using the DXGI format that matches
+        /// <typeparamref name="T"/>.
         /// </summary>
-        /// <param name="width">Width in pixels; must be positive.</param>
-        /// <param name="height">Height in pixels; must be positive.</param>
-        public GPUTexture2D<float4> CreateRWTexture2D(int width, int height)
-            => new(Device, width, height, Format.R32G32B32A32_Float);
+        public Texture2D<T> CreateTexture2D<T>(int width, int height) where T : unmanaged
+            => new(Device, width, height);
+
+        /// <summary>
+        /// Creates a read-only 2D texture with an explicit DXGI format.
+        /// </summary>
+        public Texture2D<T> CreateTexture2D<T>(int width, int height, Format format) where T : unmanaged
+            => new(Device, width, height, format);
+
+        /// <summary>
+        /// Creates a read-write 2D texture using the DXGI format that matches
+        /// <typeparamref name="T"/>.
+        /// </summary>
+        public RWTexture2D<T> CreateRWTexture2D<T>(int width, int height) where T : unmanaged
+            => new(Device, width, height);
+
+        /// <summary>
+        /// Creates a read-write 2D texture with an explicit DXGI format.
+        /// </summary>
+        public RWTexture2D<T> CreateRWTexture2D<T>(int width, int height, Format format) where T : unmanaged
+            => new(Device, width, height, format);
+
+        /// <summary>
+        /// Creates a read-only 3D texture using the DXGI format that matches
+        /// <typeparamref name="T"/>.
+        /// </summary>
+        public Texture3D<T> CreateTexture3D<T>(int width, int height, int depth) where T : unmanaged
+            => new(Device, width, height, depth);
+
+        /// <summary>
+        /// Creates a read-only 3D texture with an explicit DXGI format.
+        /// </summary>
+        public Texture3D<T> CreateTexture3D<T>(int width, int height, int depth, Format format) where T : unmanaged
+            => new(Device, width, height, depth, format);
+
+        /// <summary>
+        /// Creates a read-write 3D texture using the DXGI format that matches
+        /// <typeparamref name="T"/>.
+        /// </summary>
+        public RWTexture3D<T> CreateRWTexture3D<T>(int width, int height, int depth) where T : unmanaged
+            => new(Device, width, height, depth);
+
+        /// <summary>
+        /// Creates a read-write 3D texture with an explicit DXGI format.
+        /// </summary>
+        public RWTexture3D<T> CreateRWTexture3D<T>(int width, int height, int depth, Format format) where T : unmanaged
+            => new(Device, width, height, depth, format);
 
         /// <summary>
         /// Creates a read-only structured buffer and uploads <paramref name="data"/>.
@@ -171,7 +215,7 @@ namespace DivisionEngine
         /// </summary>
         /// <typeparam name="T">An unmanaged, sequential element struct.</typeparam>
         /// <param name="data">The initial element data. Must not be empty.</param>
-        public ReadOnlyBuffer<T> CreateReadOnlyBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
+        public StructuredBuffer<T> CreateStructuredBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
             => new(Device, data);
 
         /// <summary>
@@ -180,7 +224,7 @@ namespace DivisionEngine
         /// </summary>
         /// <typeparam name="T">An unmanaged, sequential element struct.</typeparam>
         /// <param name="count">Number of elements; must be positive.</param>
-        public ReadWriteBuffer<T> CreateReadWriteBuffer<T>(int count) where T : unmanaged
+        public RWStructuredBuffer<T> CreateRWStructuredBuffer<T>(int count) where T : unmanaged
             => new(Device, count);
 
         /// <summary>
@@ -188,57 +232,8 @@ namespace DivisionEngine
         /// </summary>
         /// <typeparam name="T">An unmanaged, sequential element struct.</typeparam>
         /// <param name="data">The initial element data. Must not be empty.</param>
-        public ReadWriteBuffer<T> CreateReadWriteBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
+        public RWStructuredBuffer<T> CreateRWStructuredBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
             => new(Device, data);
-
-        /// <summary>
-        /// Copies the contents of a GPU texture into a CPU-side <c>float4[]</c>.
-        /// </summary>
-        /// <param name="tex">A texture created by <see cref="CreateRWTexture2D"/>.</param>
-        /// <returns>
-        /// Pixel data in <b>row-major</b> order, <b>top-left origin</b> - the same
-        /// convention D3D11 uses for the source texture. Index <c>y * Width + x</c>.
-        /// </returns>
-        /// <remarks>
-        /// Performs a <c>CopyResource</c> into a staging texture, then <c>Map</c>s and
-        /// reads it. Blocks until the GPU has finished prior work, so call sparingly
-        /// (once per frame at most).
-        /// </remarks>
-        public float4[] ReadTexture(GPUTexture2D<float4> tex)
-        {
-            var stagingDesc = new Texture2DDescription
-            {
-                Width = (uint)tex.Width,
-                Height = (uint)tex.Height,
-                MipLevels = 1,
-                ArraySize = 1,
-                Format = tex.Format,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Staging,
-                BindFlags = BindFlags.None,
-                CPUAccessFlags = CpuAccessFlags.Read,
-            };
-
-            using var staging = Device.CreateTexture2D(stagingDesc);
-            Context.CopyResource(staging, tex.Texture);
-
-            var result = new float4[tex.Width * tex.Height];
-            var map = Context.Map(staging, 0, MapMode.Read);
-            unsafe
-            {
-                float* src = (float*)map.DataPointer;
-                uint rowFloats = map.RowPitch / sizeof(float);
-                for (uint y = 0; y < tex.Height; y++)
-                    for (uint x = 0; x < tex.Width; x++)
-                    {
-                        uint si = y * rowFloats + x * 4;
-                        result[y * tex.Width + x] = new float4(
-                            src[si + 0], src[si + 1], src[si + 2], src[si + 3]);
-                    }
-            }
-            Context.Unmap(staging, 0);
-            return result;
-        }
 
         /// <inheritdoc/>
         public void Dispose()

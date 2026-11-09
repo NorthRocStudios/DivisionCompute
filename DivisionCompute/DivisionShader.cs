@@ -149,33 +149,93 @@ namespace DivisionEngine
         }
 
         /// <summary>
-        /// Binds a <see cref="ReadOnlyBuffer{T}"/> to a <c>StructuredBuffer&lt;T&gt;</c>
+        /// Binds a <see cref="StructuredBuffer{T}"/> to a <c>StructuredBuffer&lt;T&gt;</c>
         /// shader field.
         /// </summary>
-        public void SetReadOnlyBuffer<T>(string fieldName, ReadOnlyBuffer<T> buffer) where T : unmanaged
+        public void SetStructuredBuffer<T>(string fieldName, StructuredBuffer<T> buffer) where T : unmanaged
         {
             ArgumentNullException.ThrowIfNull(buffer);
             SetSrv(fieldName, buffer.Srv);
         }
 
         /// <summary>
-        /// Binds the read view of a <see cref="ReadWriteBuffer{T}"/> to a
+        /// Binds the read view of an <see cref="RWStructuredBuffer{T}"/> to a
         /// <c>StructuredBuffer&lt;T&gt;</c> shader field.
         /// </summary>
-        public void SetReadOnlyBuffer<T>(string fieldName, ReadWriteBuffer<T> buffer) where T : unmanaged
+        public void SetStructuredBuffer<T>(string fieldName, RWStructuredBuffer<T> buffer) where T : unmanaged
         {
             ArgumentNullException.ThrowIfNull(buffer);
             SetSrv(fieldName, buffer.Srv);
         }
 
         /// <summary>
-        /// Binds a <see cref="ReadWriteBuffer{T}"/> to an
+        /// Binds an <see cref="RWStructuredBuffer{T}"/> to an
         /// <c>RWStructuredBuffer&lt;T&gt;</c> shader field.
         /// </summary>
-        public void SetReadWriteBuffer<T>(string fieldName, ReadWriteBuffer<T> buffer) where T : unmanaged
+        public void SetRWStructuredBuffer<T>(string fieldName, RWStructuredBuffer<T> buffer) where T : unmanaged
         {
             ArgumentNullException.ThrowIfNull(buffer);
             SetUav(fieldName, buffer.Uav);
+        }
+
+        /// <summary>
+        /// Binds a <see cref="Texture2D{T}"/> to a <c>Texture2D&lt;T&gt;</c>
+        /// shader field.
+        /// </summary>
+        public void SetTexture2D<T>(string fieldName, Texture2D<T> texture) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(texture);
+            SetSrv(fieldName, texture.Srv);
+        }
+
+        /// <summary>
+        /// Binds the read view of an <see cref="RWTexture2D{T}"/> to a
+        /// <c>Texture2D&lt;T&gt;</c> shader field.
+        /// </summary>
+        public void SetTexture2D<T>(string fieldName, RWTexture2D<T> texture) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(texture);
+            SetSrv(fieldName, texture.Srv);
+        }
+
+        /// <summary>
+        /// Binds an <see cref="RWTexture2D{T}"/> to an <c>RWTexture2D&lt;T&gt;</c>
+        /// shader field.
+        /// </summary>
+        public void SetRWTexture2D<T>(string fieldName, RWTexture2D<T> texture) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(texture);
+            SetUav(fieldName, texture.Uav);
+        }
+
+        /// <summary>
+        /// Binds a <see cref="Texture3D{T}"/> to a <c>Texture3D&lt;T&gt;</c>
+        /// shader field.
+        /// </summary>
+        public void SetTexture3D<T>(string fieldName, Texture3D<T> texture) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(texture);
+            SetSrv(fieldName, texture.Srv);
+        }
+
+        /// <summary>
+        /// Binds the read view of an <see cref="RWTexture3D{T}"/> to a
+        /// <c>Texture3D&lt;T&gt;</c> shader field.
+        /// </summary>
+        public void SetTexture3D<T>(string fieldName, RWTexture3D<T> texture) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(texture);
+            SetSrv(fieldName, texture.Srv);
+        }
+
+        /// <summary>
+        /// Binds an <see cref="RWTexture3D{T}"/> to an <c>RWTexture3D&lt;T&gt;</c>
+        /// shader field.
+        /// </summary>
+        public void SetRWTexture3D<T>(string fieldName, RWTexture3D<T> texture) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(texture);
+            SetUav(fieldName, texture.Uav);
         }
 
         /// <summary>

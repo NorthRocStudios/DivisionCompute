@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) 2026 Rex Woodfield and DivisionCompute contributors
 //
 // This file is part of DivisionCompute and is subject to the terms
@@ -21,6 +21,7 @@ namespace DivisionEngine.Graphics
         /// <c>tex.Sample(s, uv)</c>
         /// </remarks>
         public static T Sample<T>(this Texture2D<T> texture, float2 uv)
+            where T : unmanaged
             => throw new NotSupportedException();
 
         /// <summary>
@@ -30,6 +31,7 @@ namespace DivisionEngine.Graphics
         /// <c>tex.SampleLevel(s, uv, mip)</c>
         /// </remarks>
         public static T SampleLevel<T>(this Texture2D<T> texture, float2 uv, float mipLevel)
+            where T : unmanaged
             => throw new NotSupportedException();
 
         /// <summary>
@@ -39,6 +41,7 @@ namespace DivisionEngine.Graphics
         /// <c>tex.Load(int3(coord, mip))</c>
         /// </remarks>
         public static T Load<T>(this Texture2D<T> texture, int2 coord)
+            where T : unmanaged
             => throw new NotSupportedException();
 
         /// <summary>
@@ -48,6 +51,7 @@ namespace DivisionEngine.Graphics
         /// <c>tex.Load(int3(coord, mip, miplevel))</c>
         /// </remarks>
         public static T Load<T>(this Texture2D<T> texture, int2 coord, int mipLevel)
+            where T : unmanaged
             => throw new NotSupportedException();
     }
 }

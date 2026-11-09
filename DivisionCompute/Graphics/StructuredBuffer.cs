@@ -11,20 +11,13 @@ using Vortice.DXGI;
 namespace DivisionEngine.Graphics
 {
     /// <summary>
-    /// Owns a D3D11 structured buffer that is bound to a shader as a read-only
-    /// <c>StructuredBuffer&lt;T&gt;</c>.
+    /// CPU-side half of <see cref="StructuredBuffer{T}"/>: owns a D3D11 structured
+    /// buffer and its shader-resource view.
     /// </summary>
-    /// <typeparam name="T">
-    /// An unmanaged, sequential struct that matches the HLSL element struct.
-    /// </typeparam>
-    /// <remarks>
-    /// Create instances through <see cref="DivisionComputeContext.CreateReadOnlyBuffer{T}(ReadOnlySpan{T})"/>.
-    /// The wrapper owns the buffer and its shader-resource view; dispose it after
-    /// the shader has finished using it.
-    /// </remarks>
-    public sealed class ReadOnlyBuffer<T> : IDisposable where T : unmanaged
+    public partial class StructuredBuffer<T> : IDisposable where T : unmanaged
     {
         private readonly ID3D11Device _device;
+        private readonly int _count;
 
         /// <summary>
         /// The underlying D3D11 buffer resource.
@@ -39,7 +32,13 @@ namespace DivisionEngine.Graphics
         /// <summary>
         /// Number of elements in the buffer.
         /// </summary>
-        public int Count { get; }
+        public int Count => _count;
+
+        /// <summary>
+        /// Number of elements in the buffer. Shader code also sees this as a
+        /// <c>GetDimensions</c> helper.
+        /// </summary>
+        public int Length => _count;
 
         /// <summary>
         /// Size of one element in bytes.
@@ -56,17 +55,13 @@ namespace DivisionEngine.Graphics
         /// </summary>
         /// <param name="device">The D3D11 device that owns the buffer.</param>
         /// <param name="data">The initial element data. Must not be empty.</param>
-        /// <exception cref="NotSupportedException">
-        /// If <typeparamref name="T"/> has a layout that cannot be represented safely
-        /// in an HLSL structured buffer.
-        /// </exception>
-        public ReadOnlyBuffer(ID3D11Device device, ReadOnlySpan<T> data)
+        public StructuredBuffer(ID3D11Device device, ReadOnlySpan<T> data)
         {
             ArgumentNullException.ThrowIfNull(device);
 
             Stride = GpuBufferHelpers.GetStride<T>();
-            Count = data.Length;
-            GpuBufferHelpers.ValidateCount(Count, Stride);
+            _count = data.Length;
+            GpuBufferHelpers.ValidateCount(_count, Stride);
 
             _device = device;
             Buffer = device.CreateBuffer(
@@ -87,14 +82,12 @@ namespace DivisionEngine.Graphics
         /// Copies the current GPU contents into a new CPU array.
         /// </summary>
         /// <param name="context">The immediate context used for the copy and map.</param>
-        /// <remarks>This blocks until the GPU has finished prior work.</remarks>
         public T[] GetData(ID3D11DeviceContext context)
             => GpuBufferHelpers.Read<T>(_device, context, Buffer, Count, Stride);
 
         /// <summary>
-        /// Uploads new contents into the buffer. The entire buffer is replaced when
-        /// <paramref name="data"/> has <see cref="Count"/> elements; a shorter span
-        /// updates only the leading elements.
+        /// Uploads new contents into the buffer. A shorter span updates only the
+        /// leading elements.
         /// </summary>
         /// <param name="context">The immediate context used for the upload.</param>
         /// <param name="data">The new element data.</param>

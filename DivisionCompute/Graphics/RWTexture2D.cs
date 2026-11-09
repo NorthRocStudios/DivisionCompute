@@ -1,0 +1,111 @@
+//
+// Copyright (c) 2026 Rex Woodfield and DivisionCompute contributors
+//
+// This file is part of DivisionCompute and is subject to the terms
+// of the DivisionCompute License. See the LICENSE.txt file in the
+// project root for full license terms.
+//
+using Vortice.Direct3D11;
+using Vortice.DXGI;
+
+namespace DivisionEngine.Graphics
+{
+    /// <summary>
+    /// CPU-side half of <see cref="RWTexture2D{T}"/>: owns a D3D11 texture plus UAV
+    /// and SRV views.
+    /// </summary>
+    public sealed partial class RWTexture2D<T> : IDisposable where T : unmanaged
+    {
+        private readonly ID3D11Device _device;
+
+        /// <summary>
+        /// The underlying D3D11 texture resource.
+        /// </summary>
+        public ID3D11Texture2D Texture { get; }
+
+        /// <summary>
+        /// The unordered-access view used when writing to this texture.
+        /// </summary>
+        public ID3D11UnorderedAccessView Uav { get; }
+
+        /// <summary>
+        /// The shader-resource view used when reading this texture in a later pass.
+        /// </summary>
+        public ID3D11ShaderResourceView Srv { get; }
+
+        /// <summary>
+        /// Width in texels.
+        /// </summary>
+        public int Width { get; }
+
+        /// <summary>
+        /// Height in texels.
+        /// </summary>
+        public int Height { get; }
+
+        /// <summary>
+        /// The DXGI format of the texture and its views.
+        /// </summary>
+        public Format Format { get; }
+
+        /// <summary>
+        /// Size of one texel in bytes.
+        /// </summary>
+        public int ElementSize { get; }
+
+        /// <summary>
+        /// Total texture size in bytes.
+        /// </summary>
+        public long SizeInBytes => (long)Width * Height * ElementSize;
+
+        /// <summary>
+        /// Creates a read-write texture using the DXGI format that matches
+        /// <typeparamref name="T"/>.
+        /// </summary>
+        public RWTexture2D(ID3D11Device device, int width, int height)
+            : this(device, width, height, GpuTexture2DHelpers.GetFormat<T>())
+        {
+        }
+
+        /// <summary>
+        /// Creates a read-write texture with an explicit DXGI format.
+        /// </summary>
+        public RWTexture2D(ID3D11Device device, int width, int height, Format format)
+        {
+            ArgumentNullException.ThrowIfNull(device);
+            if (format == Format.Unknown)
+                throw new ArgumentException("A texture format is required.", nameof(format));
+            GpuTexture2DHelpers.ValidateSize(width, height);
+
+            _device = device;
+            Width = width;
+            Height = height;
+            Format = format;
+            ElementSize = GpuTexture2DHelpers.GetElementSize<T>();
+            Texture = GpuTexture2DHelpers.CreateTexture(device, width, height, format, writable: true);
+            Srv = GpuTexture2DHelpers.CreateSrv(device, Texture, format);
+            Uav = GpuTexture2DHelpers.CreateUav(device, Texture, format);
+        }
+
+        /// <summary>
+        /// Copies the current GPU contents into a new CPU array in row-major,
+        /// top-left-origin order.
+        /// </summary>
+        public T[] GetData(ID3D11DeviceContext context)
+            => GpuTexture2DHelpers.Read<T>(_device, context, Texture, Width, Height, Format);
+
+        /// <summary>
+        /// Uploads a complete CPU image into the texture.
+        /// </summary>
+        public void SetData(ID3D11DeviceContext context, ReadOnlySpan<T> data)
+            => GpuTexture2DHelpers.Write(context, Texture, Width, Height, data);
+
+        /// <inheritdoc/>
+        public void Dispose()
+        {
+            Srv?.Dispose();
+            Uav?.Dispose();
+            Texture?.Dispose();
+        }
+    }
+}
