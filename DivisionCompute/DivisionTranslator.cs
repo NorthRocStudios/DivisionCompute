@@ -42,7 +42,6 @@ namespace DivisionEngine
         private readonly List<string> kernelNames = [];
         private readonly HashSet<string> processedStructs = [];
         private readonly Dictionary<string, string> bufferLengthHelpers = [];
-        private int cbufferSlot;
 
         /// <summary>
         /// Translates C# source code to HLSL source code.
@@ -70,6 +69,19 @@ namespace DivisionEngine
             // mentions them. Reflection-emitted structs are added dependencies-first.
             foreach (string structDecl in structDeclarations) hlsl.AppendLine(structDecl);
 
+            // Shader uniforms (plain fields) live in one constant buffer at b0, the
+            // same shape Unity's compute shaders use: declare fields, set them by
+            // name from C#, read them as plain identifiers in HLSL.
+            List<string> uniformDeclarations = GetUniformDeclarations();
+            if (uniformDeclarations.Count > 0)
+            {
+                hlsl.AppendLine($"cbuffer {DivisionShader.UniformBufferName} : register(b0)");
+                hlsl.AppendLine("{");
+                foreach (string declaration in uniformDeclarations) hlsl.AppendLine($"    {declaration}");
+                hlsl.AppendLine("};");
+                hlsl.AppendLine();
+            }
+
             // Resources and globals must be declared before inline functions that
             // reference them; HLSL requires declarations before use.
             foreach (string resource in resourceDeclarations) hlsl.AppendLine(resource);
@@ -81,7 +93,6 @@ namespace DivisionEngine
                 hlsl.AppendLine("SamplerState DivisionDefaultSampler : register(s0);");
 
             foreach (string helper in bufferLengthHelpers.Values) hlsl.AppendLine(helper);
-            foreach (string variable in variableDeclarations) hlsl.AppendLine(variable);
             foreach (string func in inlineFunctions) hlsl.AppendLine(func);
 
             if (kernelDefinitions.Count > 0) hlsl.AppendLine();
@@ -628,24 +639,6 @@ namespace DivisionEngine
         {
             string memberName = node.Name.Identifier.Text;
 
-            // ConstantBuffer<T> values are read as cbuffer.Value.field in C# but the
-            // generated HLSL exposes them as flat cbuffer members. Rewrite the access
-            // to the prefixed member name the cbuffer declaration used.
-            if (node.Expression is MemberAccessExpressionSyntax valueAccess &&
-                valueAccess.Name.Identifier.Text == "Value" &&
-                TryGetConstantBufferField(valueAccess.Expression, out string cbufferName))
-            {
-                hlsl.Append($"{cbufferName}_{memberName}");
-                return;
-            }
-
-            // Reading or passing the whole buffer has no HLSL equivalent in shader
-            // model 5.0; fail loudly instead of emitting an invalid member name.
-            if (memberName == "Value" && TryGetConstantBufferField(node.Expression, out string wholeBuffer))
-                throw new NotSupportedException(
-                    $"Constant buffer '{wholeBuffer}' is read as a whole value. Read individual fields instead, " +
-                    $"for example {wholeBuffer}.Value.myField.");
-
             // StructuredBuffer exposes GetDimensions, Load, and operator[], not a
             // Length/Count property. Route the C# convenience properties through a
             // generated helper so the shader author can keep using buffer.Length.
@@ -937,10 +930,18 @@ namespace DivisionEngine
         /// <summary>
         /// Gathers all fields in the shader struct.
         /// </summary>
+        /// <remarks>
+        /// Plain (non-<c>[ShaderResource]</c>) instance fields become shader uniforms.
+        /// When the runtime shader type is known, their declarations come from
+        /// <see cref="ShaderUniformLayout"/> so the emitted HLSL and the CPU-side
+        /// packing are built from the same description.
+        /// </remarks>
         private void CollectFields(StructDeclarationSyntax structDeclaration)
         {
             foreach (FieldDeclarationSyntax field in structDeclaration.Members.OfType<FieldDeclarationSyntax>())
             {
+                if (field.Modifiers.Any(modifier => modifier.Text == "static")) continue;
+
                 bool isShaderResource = field.AttributeLists // Check if this field has ShaderResource attribute
                     .SelectMany(list => list.Attributes)
                     .Any(attr => attr.Name.ToString() == "ShaderResource");
@@ -954,18 +955,32 @@ namespace DivisionEngine
                     string? hlslDeclaration = TranslateResourceField(fieldType, fieldName, runtimeField);
                     if (hlslDeclaration != null) resourceDeclarations.Add(hlslDeclaration);
                 }
-                else
+                else if (shaderType is null)
                 {
-                    // Check if this is a custom struct type that needs translation
-                    ITypeSymbol? typeSymbol = semanticModel.GetTypeInfo(fieldType).Type;
-                    if (typeSymbol is INamedTypeSymbol namedType && namedType.TypeKind == TypeKind.Struct && !IsBuiltInType(namedType.Name))
-                        TranslateStructIfNeeded(namedType);
-
-                    // This is a regular variable (float, int, float3, etc.)
+                    // Fallback for callers that translate without a runtime type. The
+                    // normal path builds uniforms from metadata in Translate().
                     string? hlslDeclaration = TranslateVariableField(fieldType, fieldName);
                     if (hlslDeclaration != null) variableDeclarations.Add(hlslDeclaration);
                 }
             }
+        }
+
+        /// <summary>
+        /// Builds the HLSL declarations for the shader's uniforms. When the runtime
+        /// type is known the declarations come from the shared
+        /// <see cref="ShaderUniformLayout"/>, so HLSL and the CPU-side packing cannot
+        /// disagree; otherwise the syntax-only fallback is used.
+        /// </summary>
+        private List<string> GetUniformDeclarations()
+        {
+            if (shaderType is null) return variableDeclarations;
+
+            ShaderUniformLayout layout = ShaderUniformLayout.For(shaderType);
+            return
+            [
+                .. layout.Fields.Select(field =>
+                    $"{ShaderUniformLayout.GetHlslTypeName(field.Kind)} {field.Name};")
+            ];
         }
 
         /// <summary>
@@ -998,16 +1013,6 @@ namespace DivisionEngine
                     Type[] typeArguments = runtimeField.FieldType.GetGenericArguments();
                     if (typeArguments.Length == 1)
                         runtimeElementType = typeArguments[0];
-                }
-
-                if (genericName == "ConstantBuffer")
-                {
-                    if (runtimeElementType is null)
-                        throw new NotSupportedException(
-                            $"ShaderResource field '{fieldName}' is a ConstantBuffer<T>. The translator needs the runtime " +
-                            "element type, so compile the shader through DivisionComputeContext or DivisionShaderCompiler.");
-
-                    return BuildConstantBufferDeclaration(fieldName, runtimeElementType, cbufferSlot++);
                 }
 
                 string elementType;
@@ -1050,65 +1055,6 @@ namespace DivisionEngine
 
             throw new NotSupportedException($"ShaderResource field '{fieldName}' must be a generic type " +
                 $"(Buffer<T>, Texture2D<T>, etc.) or Sampler. Got: {fieldType.GetType().Name}");
-        }
-
-        /// <summary>
-        /// Builds the HLSL <c>cbuffer</c> declaration for a <c>ConstantBuffer&lt;T&gt;</c>
-        /// field. Members are emitted flat (HLSL has no buffer member access in
-        /// shader model 5.0) and prefixed with the field name so two constant
-        /// buffers can share field names and locals can never shadow them.
-        /// </summary>
-        /// <param name="fieldName">The shader struct field name.</param>
-        /// <param name="elementType">The constant-buffer contents type.</param>
-        /// <param name="slot">The <c>b</c> register slot assigned in declaration order.</param>
-        private static string BuildConstantBufferDeclaration(string fieldName, Type elementType, int slot)
-        {
-            GpuConstantBufferLayout layout = GpuConstantBufferLayout.For(elementType);
-
-            var builder = new StringBuilder();
-            builder.AppendLine($"cbuffer {fieldName} : register(b{slot})");
-            builder.AppendLine("{");
-            foreach (ConstantBufferField field in layout.Fields)
-                builder.AppendLine($"    {ShaderStructLayout.GetHlslTypeName(field.Field.FieldType)} {fieldName}_{field.Field.Name};");
-            builder.AppendLine("};");
-            return builder.ToString();
-        }
-
-        /// <summary>
-        /// Resolves a member-access receiver to a <c>ConstantBuffer&lt;T&gt;</c> field.
-        /// </summary>
-        private bool TryGetConstantBufferField(ExpressionSyntax expression, out string fieldName)
-        {
-            fieldName = string.Empty;
-
-            string? candidateName = expression switch
-            {
-                IdentifierNameSyntax identifier => identifier.Identifier.Text,
-                MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax } member => member.Name.Identifier.Text,
-                _ => null,
-            };
-
-            if (candidateName is not null && shaderFields.TryGetValue(candidateName, out FieldInfo? runtimeField))
-            {
-                Type fieldType = runtimeField.FieldType;
-                if (fieldType.IsGenericType && fieldType.GetGenericTypeDefinition() == typeof(ConstantBuffer<>))
-                {
-                    fieldName = candidateName;
-                    return true;
-                }
-
-                return false;
-            }
-
-            // Fallback for callers that use the translator without a runtime type.
-            if (semanticModel.GetSymbolInfo(expression).Symbol is IFieldSymbol fieldSymbol &&
-                fieldSymbol.Type.Name == "ConstantBuffer")
-            {
-                fieldName = fieldSymbol.Name;
-                return true;
-            }
-
-            return false;
         }
 
         /// <summary>

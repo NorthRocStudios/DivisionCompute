@@ -72,7 +72,7 @@ namespace DivisionEngine
         {
             ArgumentNullException.ThrowIfNull(shaderType);
 
-            uint srvSlot = 0, uavSlot = 0, cbSlot = 0;
+            uint srvSlot = 0, uavSlot = 0;
 
             foreach (FieldInfo field in shaderType.GetFields(
                 BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance))
@@ -91,7 +91,7 @@ namespace DivisionEngine
                     throw new NotSupportedException(
                         $"Shader resource field '{field.Name}' has unsupported type '{fieldType.Name}'. " +
                         "Use Buffer<T>, RWBuffer<T>, StructuredBuffer<T>, RWStructuredBuffer<T>, " +
-                        "Texture2D<T>, RWTexture2D<T>, Texture3D<T>, RWTexture3D<T>, or ConstantBuffer<T>.");
+                        "Texture2D<T>, RWTexture2D<T>, Texture3D<T>, or RWTexture3D<T>.");
 
                 Type definition = fieldType.GetGenericTypeDefinition();
 
@@ -109,16 +109,12 @@ namespace DivisionEngine
                 {
                     yield return (field.Name, srvSlot++, "SRV");
                 }
-                else if (definition == typeof(ConstantBuffer<>))
-                {
-                    yield return (field.Name, cbSlot++, "CB");
-                }
                 else
                 {
                     throw new NotSupportedException(
                         $"Shader resource field '{field.Name}' has unsupported type '{fieldType.Name}'. " +
                         "Use Buffer<T>, RWBuffer<T>, StructuredBuffer<T>, RWStructuredBuffer<T>, " +
-                        "Texture2D<T>, RWTexture2D<T>, Texture3D<T>, RWTexture3D<T>, or ConstantBuffer<T>.");
+                        "Texture2D<T>, RWTexture2D<T>, Texture3D<T>, or RWTexture3D<T>.");
                 }
             }
         }
@@ -135,6 +131,10 @@ namespace DivisionEngine
             var layout = GetResourceLayout(shaderType).ToArray();
             var shader = DivisionShader.FromCompilation(compilation, Device, Context);
             shader.SetResourceLayout(layout);
+
+            // Plain fields form the parameter constant buffer at b0; every Set* call
+            // writes into its CPU-side mirror and Dispatch uploads it once.
+            shader.EnableUniforms(shaderType);
             return shader;
         }
 
@@ -234,16 +234,6 @@ namespace DivisionEngine
         /// <param name="data">The initial element data. Must not be empty.</param>
         public RWStructuredBuffer<T> CreateRWStructuredBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
             => new(Device, data);
-
-        /// <summary>
-        /// Creates a constant buffer holding one value of <typeparamref name="T"/>.
-        /// Bind it to a <c>ConstantBuffer&lt;T&gt;</c> shader field with
-        /// <see cref="DivisionShader.SetConstantBuffer{T}(string, ConstantBuffer{T})"/>.
-        /// </summary>
-        /// <typeparam name="T">An unmanaged struct of scalars, vectors, or int/uint enums.</typeparam>
-        /// <param name="value">The initial contents.</param>
-        public ConstantBuffer<T> CreateConstantBuffer<T>(in T value) where T : unmanaged
-            => new(Device, value);
 
         /// <inheritdoc/>
         public void Dispose()

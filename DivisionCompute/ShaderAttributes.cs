@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) 2026 Rex Woodfield and DivisionCompute contributors
 //
 // This file is part of DivisionCompute and is subject to the terms
@@ -104,19 +104,24 @@ namespace DivisionEngine
 
     /// <summary>
     /// Marks a field inside a <see cref="ShaderAttribute"/>-decorated struct as a
-    /// GPU resource (texture, buffer, sampler, or constant buffer). The field's
-    /// declared type determines which HLSL resource type it translates to, and
-    /// the fields are assigned register slots in declaration order.
+    /// GPU resource (texture, buffer, or sampler). The field's declared type
+    /// determines which HLSL resource type it translates to, and the fields are
+    /// assigned register slots in declaration order.
     /// </summary>
     /// <remarks>
     /// <para>
     /// The order of <c>[ShaderResource]</c> fields in the struct determines the
-    /// HLSL register slots. UAVs are bound to <c>u0</c>, <c>u1</c>, … ; SRVs to
-    /// <c>t0</c>, <c>t1</c>, … ; and constant buffers to <c>b0</c>, <c>b1</c>, …
-    /// This layout is mirrored on the CPU side by
+    /// HLSL register slots. UAVs are bound to <c>u0</c>, <c>u1</c>, … and SRVs to
+    /// <c>t0</c>, <c>t1</c>, … . This layout is mirrored on the CPU side by
     /// <see cref="DivisionComputeContext.GetResourceLayout(Type)"/>, so reordering
     /// fields shifts their slots - keep SRV and UAV counts stable when possible
     /// to avoid rebinding surprises.
+    /// </para>
+    /// <para>
+    /// Fields <b>without</b> this attribute are shader uniforms. They are packed
+    /// into <c>cbuffer DivisionParams</c> at <c>b0</c> and set by name with
+    /// <see cref="DivisionShader.SetFloat(string, float)"/> and friends, the same
+    /// way a Unity compute shader is driven.
     /// </para>
     /// <para>
     /// The <see cref="Slot"/> and <see cref="Type"/> properties are reserved for

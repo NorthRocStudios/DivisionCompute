@@ -7,6 +7,7 @@
 //
 using DivisionEngine;
 using DivisionEngine.Graphics;
+using DivisionEngine.MathLib;
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Vortice.Direct3D11;
@@ -28,7 +29,13 @@ namespace DivisionEngine
     /// </remarks>
     public partial class DivisionShader : IDisposable
     {
+        /// <summary>
+        /// Name of the constant buffer that holds the shader's plain fields.
+        /// </summary>
+        public const string UniformBufferName = "DivisionParams";
+
         private readonly ID3D11ComputeShader[] _computeShaders;
+        private readonly ID3D11Device _device;
         private readonly ID3D11DeviceContext _deviceContext;
         private readonly Dictionary<string, int> _kernelNameToIndex;
         private readonly Dictionary<int, (uint x, uint y, uint z)> _kernelThreadSizes;
@@ -40,6 +47,12 @@ namespace DivisionEngine
 
         // Ordered list of (field name, register slot, kind) so dispatch can bind by slot
         private readonly List<(string name, uint slot, string kind)> _layout = [];
+
+        // Shader uniforms packed into one b0 constant buffer
+        private ShaderUniformLayout? _uniformLayout;
+        private byte[]? _uniformBytes;
+        private ID3D11Buffer? _uniformBuffer;
+        private bool _uniformsDirty;
 
         /// <summary>
         /// Name of the originating C# shader struct.
@@ -56,6 +69,7 @@ namespace DivisionEngine
         private DivisionShader(HLSLCompilationResult result, ID3D11Device device, ID3D11DeviceContext context)
         {
             ShaderName = result.ShaderTypeName;
+            _device = device;
             _deviceContext = context;
 
             if (result.KernelBytecodes.Count == 0)
@@ -117,6 +131,178 @@ namespace DivisionEngine
             _layout.Clear();
             _layout.AddRange(layout);
         }
+
+        #region uniforms
+
+        /// <summary>
+        /// True when the shader declares uniforms (plain, non-<c>[ShaderResource]</c> fields).
+        /// </summary>
+        public bool HasUniforms => _uniformLayout is { Fields.Count: > 0 };
+
+        /// <summary>
+        /// The uniform names of this shader, in declaration order.
+        /// </summary>
+        public IReadOnlyList<string> UniformNames
+            => _uniformLayout is null ? [] : [.. _uniformLayout.Names];
+
+        /// <summary>
+        /// Builds the parameter constant buffer that holds the shader's plain fields
+        /// and binds it to <c>b0</c>. Called by <see cref="DivisionComputeContext.CreateShader"/>.
+        /// </summary>
+        /// <param name="shaderType">The <c>[Shader]</c> struct type.</param>
+        public void EnableUniforms(Type shaderType)
+        {
+            ArgumentNullException.ThrowIfNull(shaderType);
+
+            if (_layout.Any(entry => entry.kind == "CB"))
+                throw new InvalidOperationException(
+                    $"Shader '{ShaderName}' already has a constant buffer bound; uniforms were enabled twice.");
+
+            _uniformLayout = ShaderUniformLayout.For(shaderType);
+            if (_uniformLayout.Fields.Count == 0) return;
+
+            _uniformBytes = new byte[_uniformLayout.ByteSize];
+            _uniformBuffer = _device.CreateBuffer(
+                _uniformBytes,
+                BindFlags.ConstantBuffer,
+                ResourceUsage.Default,
+                CpuAccessFlags.None,
+                ResourceOptionFlags.None,
+                sizeInBytes: checked((uint)_uniformBytes.Length),
+                structureByteStride: 0);
+
+            _cbuffers[UniformBufferName] = _uniformBuffer;
+            _layout.Add((UniformBufferName, 0, "CB"));
+        }
+
+        /// <summary>
+        /// Sets a <c>float</c> uniform by name.
+        /// </summary>
+        /// <param name="name">The shader struct field name.</param>
+        /// <param name="value">The value to upload on the next dispatch.</param>
+        public void SetFloat(string name, float value) => WriteUniform(name, UniformKind.Float, value);
+
+        /// <summary>
+        /// Sets an <c>int</c> uniform by name.
+        /// </summary>
+        /// <param name="name">The shader struct field name.</param>
+        /// <param name="value">The value to upload on the next dispatch.</param>
+        public void SetInt(string name, int value) => WriteUniform(name, UniformKind.Int, value);
+
+        /// <summary>
+        /// Sets a <c>uint</c> uniform by name.
+        /// </summary>
+        /// <param name="name">The shader struct field name.</param>
+        /// <param name="value">The value to upload on the next dispatch.</param>
+        public void SetUInt(string name, uint value) => WriteUniform(name, UniformKind.UInt, value);
+
+        /// <summary>
+        /// Sets a <c>bool</c> uniform by name. Written as a 32-bit 0/1 flag, which is
+        /// how HLSL stores bools in a constant buffer.
+        /// </summary>
+        /// <param name="name">The shader struct field name.</param>
+        /// <param name="value">The value to upload on the next dispatch.</param>
+        public void SetBool(string name, bool value) => WriteUniform(name, UniformKind.Bool, value);
+
+        /// <summary>Sets a <c>float2</c> uniform by name.</summary>
+        public void SetVector(string name, float2 value) => WriteUniform(name, UniformKind.Float2, value);
+
+        /// <summary>Sets a <c>float3</c> uniform by name.</summary>
+        public void SetVector(string name, float3 value) => WriteUniform(name, UniformKind.Float3, value);
+
+        /// <summary>Sets a <c>float4</c> uniform by name.</summary>
+        public void SetVector(string name, float4 value) => WriteUniform(name, UniformKind.Float4, value);
+
+        /// <summary>Sets an <c>int2</c> uniform by name.</summary>
+        public void SetVector(string name, int2 value) => WriteUniform(name, UniformKind.Int2, value);
+
+        /// <summary>Sets an <c>int3</c> uniform by name.</summary>
+        public void SetVector(string name, int3 value) => WriteUniform(name, UniformKind.Int3, value);
+
+        /// <summary>Sets an <c>int4</c> uniform by name.</summary>
+        public void SetVector(string name, int4 value) => WriteUniform(name, UniformKind.Int4, value);
+
+        /// <summary>Sets a <c>uint2</c> uniform by name.</summary>
+        public void SetVector(string name, uint2 value) => WriteUniform(name, UniformKind.UInt2, value);
+
+        /// <summary>Sets a <c>uint3</c> uniform by name.</summary>
+        public void SetVector(string name, uint3 value) => WriteUniform(name, UniformKind.UInt3, value);
+
+        /// <summary>Sets a <c>uint4</c> uniform by name.</summary>
+        public void SetVector(string name, uint4 value) => WriteUniform(name, UniformKind.UInt4, value);
+
+        /// <summary>
+        /// Sets a uniform by name from any compatible value, such as an enum.
+        /// The value's size must match the uniform's HLSL type.
+        /// </summary>
+        /// <typeparam name="T">An unmanaged value type.</typeparam>
+        /// <param name="name">The shader struct field name.</param>
+        /// <param name="value">The value to upload on the next dispatch.</param>
+        public void Set<T>(string name, in T value) where T : unmanaged
+        {
+            UniformField field = RequireField(name);
+            ShaderUniformLayout.Write(UniformSpan(), in field, in value);
+            _uniformsDirty = true;
+        }
+
+        /// <summary>
+        /// Returns a copy of the packed uniform bytes in the HLSL layout. Intended for
+        /// tests and diagnostics.
+        /// </summary>
+        public byte[] GetUniformData()
+            => (byte[])(_uniformBytes
+                ?? throw new InvalidOperationException($"Shader '{ShaderName}' has no uniforms.")).Clone();
+
+        private void WriteUniform<T>(string name, UniformKind kind, in T value) where T : unmanaged
+        {
+            UniformField field = RequireField(name);
+            if (field.Kind != kind)
+                throw new ArgumentException(
+                    $"Uniform '{name}' on shader '{ShaderName}' is {ShaderUniformLayout.GetHlslTypeName(field.Kind)}; " +
+                    $"{DescribeSetter(field.Kind)} expects that type.",
+                    nameof(name));
+
+            ShaderUniformLayout.Write(UniformSpan(), in field, in value);
+            _uniformsDirty = true;
+        }
+
+        private Span<byte> UniformSpan()
+            => (_uniformBytes
+                ?? throw new InvalidOperationException(
+                    $"Shader '{ShaderName}' has no uniforms. Add plain fields to the shader struct to declare them."))
+                .AsSpan();
+
+        private UniformField RequireField(string name)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+            ShaderUniformLayout layout = _uniformLayout
+                ?? throw new InvalidOperationException(
+                    $"Shader '{ShaderName}' has no uniforms. Add plain fields to the shader struct to declare them.");
+
+            if (!layout.TryGet(name, out UniformField field))
+                throw new ArgumentException(
+                    $"Shader '{ShaderName}' has no uniform named '{name}'. Known uniforms: {DescribeUniforms(layout)}.",
+                    nameof(name));
+
+            return field;
+        }
+
+        private static string DescribeSetter(UniformKind kind) => kind switch
+        {
+            UniformKind.Float => "SetFloat",
+            UniformKind.Int => "SetInt",
+            UniformKind.UInt => "SetUInt",
+            UniformKind.Bool => "SetBool",
+            _ => $"SetVector with a {ShaderUniformLayout.GetHlslTypeName(kind)}",
+        };
+
+        private static string DescribeUniforms(ShaderUniformLayout layout)
+            => layout.Fields.Count == 0
+                ? "(none)"
+                : string.Join(", ", layout.Fields.Select(f => $"{f.Name} ({ShaderUniformLayout.GetHlslTypeName(f.Kind)})"));
+
+        #endregion uniforms
 
         /// <summary>
         /// The resource bindings of this shader, in declaration order: the C# field
@@ -187,16 +373,6 @@ namespace DivisionEngine
             ArgumentNullException.ThrowIfNull(buffer);
             ValidateBinding(fieldName, "CB");
             _cbuffers[fieldName] = buffer;
-        }
-
-        /// <summary>
-        /// Binds a <see cref="ConstantBuffer{T}"/> to a <c>ConstantBuffer&lt;T&gt;</c>
-        /// shader field.
-        /// </summary>
-        public void SetConstantBuffer<T>(string fieldName, ConstantBuffer<T> buffer) where T : unmanaged
-        {
-            ArgumentNullException.ThrowIfNull(buffer);
-            SetConstantBuffer(fieldName, buffer.Buffer);
         }
 
         /// <summary>
@@ -304,6 +480,14 @@ namespace DivisionEngine
             if (!_kernelThreadSizes.TryGetValue(kernelIndex, out var sizes))
                 throw new ArgumentException($"Invalid kernel index: {kernelIndex}");
 
+            // Upload the packed uniforms once per dispatch, before the buffer is
+            // bound. This mirrors Unity: many Set* calls, one constant-buffer update.
+            if (_uniformBuffer is not null && _uniformsDirty && _uniformBytes is not null)
+            {
+                _deviceContext.UpdateSubresource<byte>(_uniformBytes, _uniformBuffer);
+                _uniformsDirty = false;
+            }
+
             if (Verbose)
             {
                 Debug.WriteLine($"Dispatching kernel {kernelIndex}");
@@ -374,6 +558,8 @@ namespace DivisionEngine
         /// <inheritdoc/>
         public void Dispose()
         {
+            _uniformBuffer?.Dispose();
+
             foreach (ID3D11ComputeShader shader in _computeShaders)
                 shader?.Dispose();
         }

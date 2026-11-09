@@ -1,4 +1,4 @@
-# DivisionCompute
+﻿# DivisionCompute
 
 [![NuGet](https://img.shields.io/nuget/v/NorthRoc.DivisionCompute?label=NuGet&logo=nuget)](https://www.nuget.org/packages/NorthRoc.DivisionCompute/)
 [![NuGet Downloads](https://img.shields.io/nuget/dt/NorthRoc.DivisionCompute?label=Downloads&logo=nuget)](https://www.nuget.org/packages/NorthRoc.DivisionCompute/)
@@ -18,6 +18,7 @@ This library is part of the [Division Engine](https://github.com/NorthRocStudios
 - **Runtime Compilation**: Compile new shaders on the fly without needing to restart your application or pre-compile.
 - **Cross-Platform Ready**: The generated HLSL is compatible with multiple backends. The included runtime uses D3D11, but the core translation is backend-agnostic, paving the way for SPIR-V and other graphics APIs.
 - **Familiar API**: The goal is a simple, intuitive API that feels like ComputeSharp, with methods for compiling shaders, binding resources, dispatching kernels, and reading back data.
+- **Unity-Style Parameters**: Plain fields on the shader become uniforms, set with `shader.SetFloat("width", 1280)` / `SetVector` / `SetInt` / `SetBool` - no parameter structs or manual constant-buffer packing.
 - **Structured Buffers**: Upload arrays of structs, read them with `StructuredBuffer<T>`, write them with `RWStructuredBuffer<T>`, and read the results back without hand-building D3D11 views.
 - **Unified Resource Types**: The same `StructuredBuffer<T>`, `RWStructuredBuffer<T>`, `Texture2D<T>`, and `Texture3D<T>` types are used in shader code and on the CPU for allocation and readback.
 - **CPU/GPU Parity**: Paired with the [DivisionMath](https://github.com/NorthRocStudios/DivisionMath) library, it ensures your shader math behaves identically on the CPU and GPU.
@@ -177,62 +178,63 @@ float4[] result = output.GetData(context.Context);
 - The old `ReadOnlyBuffer<T>`, `ReadWriteBuffer<T>`, and `GPUTexture2D<T>` wrappers
   have been removed. The shader field types are now the CPU types.
 
-## 🎛️ Constant Buffers
+## 🎛️ Shader Parameters
 
-Effect parameters live in a `ConstantBuffer<T>` field. C# reads them through
-`.Value`, and the translator flattens them into an HLSL `cbuffer`:
+Plain fields on the shader struct are uniforms. Set them by name from C#, the same
+way a Unity compute shader works - no parameter struct, no manual packing:
 
 ```csharp
-public struct BlurConstants
+[Shader]
+public struct BlurShader
 {
     public float width;
     public float height;
     public float radius;
     public float3 tint;
-}
 
-[Shader]
-public struct BlurShader
-{
-    [ShaderResource] public ConstantBuffer<BlurConstants> constants;
-    [ShaderResource] public RWTexture2D<float4> output;
+    [ShaderResource]
+    public RWTexture2D<float4> output;
 
     [Kernel(8, 8, 1)]
     public void Execute(uint3 id)
     {
-        float sigma = constants.Value.radius * 0.5f;
-        output[new int2((int)id.x, (int)id.y)] = new float4(constants.Value.tint, sigma);
+        float sigma = radius * 0.5f;   // uniforms are plain identifiers in HLSL
+        output[new int2((int)id.x, (int)id.y)] = new float4(tint, sigma);
     }
 }
 ```
 
 ```csharp
-BlurConstants constants = new() { width = 1280, height = 720, radius = 6f, tint = new float3(1f, 0.8f, 0.6f) };
-
-using ConstantBuffer<BlurConstants> cb = context.CreateConstantBuffer(in constants);
 using DivisionShader shader = context.CompileShader(typeof(BlurShader));
 
-shader.SetConstantBuffer("constants", cb);
+shader.SetFloat("width", 1280);
+shader.SetFloat("height", 720);
+shader.SetVector("tint", new float3(1f, 0.8f, 0.6f));
+shader.SetFloat("radius", 6f);
+
 shader.Dispatch2D(shader.FindKernel("Execute"), 1280, 720);
 
-constants.radius = 12f;
-cb.SetData(context.Context, in constants); // upload new values, then dispatch again
+shader.SetFloat("radius", 12f);          // just set it again for the next dispatch
+shader.Dispatch2D(shader.FindKernel("Execute"), 1280, 720);
 ```
 
-- The translator emits `cbuffer constants : register(b0) { float constants_width; ... }`
-  and rewrites `constants.Value.width` to `constants_width`. The field-name prefix
-  keeps members unique across buffers and out of reach of shader locals.
-- Values are packed with the Direct3D constant-buffer rules (16-byte registers,
-  no member may straddle a register), and the CPU-side upload applies the same
-  layout, so the C# struct does **not** need manual padding.
-- Supported fields: `float`, `int`, `uint`, int/uint-backed enums, and DivisionMath
-  float/int/uint vectors. Nested structs, arrays, matrices, and `bool` are rejected
-  so a layout mismatch can never reach the GPU silently.
-- `Dispatch2D(kernel, width, height)` is the constant-buffer-friendly equivalent of
-  ComputeSharp's `Device.For(width, height, shader)`; it reads the thread-group
-  size from the `[Kernel]` attribute. `GetThreadGroupSize` and `ResourceLayout`
-  expose the same information for tooling.
-
+- `SetFloat`, `SetInt`, `SetUInt`, `SetBool`, and `SetVector` (`float2/3/4`,
+  `int2/3/4`, `uint2/3/4`) write into a CPU-side mirror of the parameter buffer.
+  `Dispatch` uploads it once, so any number of setters costs a single
+  constant-buffer update.
+- The translator emits `cbuffer DivisionParams : register(b0) { float width; ... }`
+  from those fields and keeps them as plain identifiers in shader code.
+- Values are packed with the Direct3D constant-buffer rules (16-byte registers, no
+  member may straddle a register boundary), computed from the field types - so the
+  C# struct needs **no manual padding**.
+- Unknown names and type mismatches throw `ArgumentException` at the call site
+  instead of silently doing nothing, and `shader.UniformNames` lists what is settable.
+- Supported types: `float`, `int`, `uint`, `bool`, int/uint-backed enums, and
+  DivisionMath float/int/uint vectors. Matrices, nested structs, arrays, and
+  `double` are rejected with a diagnostic - put larger data in a structured buffer.
+- `Dispatch2D(kernel, width, height)` is the `Device.For(width, height, shader)`
+  equivalent; it reads the thread-group size from the `[Kernel]` attribute.
+  `GetThreadGroupSize` and `ResourceLayout` expose the same information for tooling.
 ## 💖 Support
 
 If you want to support DivisionCompute and the rest of the Division Engine ecosystem, sponsor me on GitHub:
