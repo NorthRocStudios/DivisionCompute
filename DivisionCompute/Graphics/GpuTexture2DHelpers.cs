@@ -39,6 +39,27 @@ namespace DivisionEngine.Graphics
                     nameof(width), width, "The texture has too many texels for a single CPU array.");
         }
 
+        /// <summary>
+        /// Validates that two textures can be copied into each other with
+        /// <c>CopyResource</c>, which requires identical size and format.
+        /// </summary>
+        public static void ValidateCopy(
+            int sourceWidth,
+            int sourceHeight,
+            Format sourceFormat,
+            int destinationWidth,
+            int destinationHeight,
+            Format destinationFormat)
+        {
+            if (sourceWidth != destinationWidth || sourceHeight != destinationHeight)
+                throw new ArgumentException(
+                    $"Cannot copy a {sourceWidth}x{sourceHeight} texture into a {destinationWidth}x{destinationHeight} texture.");
+
+            if (sourceFormat != destinationFormat)
+                throw new ArgumentException(
+                    $"Cannot copy a {sourceFormat} texture into a {destinationFormat} texture.");
+        }
+
         public static ID3D11Texture2D CreateTexture(
             ID3D11Device device,
             int width,

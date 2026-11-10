@@ -242,11 +242,13 @@ namespace DivisionEngine
                         shaderType.Name);
                 }
 
-                string sourceCode = File.ReadAllText(sourcePath);
-                SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, path: sourcePath);
+                SyntaxTree syntaxTree = GetSyntaxTree(sourcePath);
 
+                // Shared helper classes (ShaderMath, PBR, SDFPrimitives, ...) must be
+                // present as source, not metadata, so their method bodies can be
+                // translated when a shader calls them.
                 CSharpCompilation compilation = CSharpCompilation.Create($"{shaderType.Name}_Compilation")
-                    .AddSyntaxTrees(syntaxTree)
+                    .AddSyntaxTrees(GetProjectSyntaxTrees(sourcePath, syntaxTree).Prepend(syntaxTree))
                     .AddReferences(BuildMetadataReferences(shaderType));
 
                 SemanticModel semanticModel = compilation.GetSemanticModel(syntaxTree);
@@ -263,7 +265,7 @@ namespace DivisionEngine
                         $"No [Kernel] methods found in struct '{shaderType.Name}'",
                         shaderType.Name);
 
-                DivisionTranslator translator = new DivisionTranslator(semanticModel, shaderType);
+                DivisionTranslator translator = new DivisionTranslator(semanticModel, shaderType, compilation);
                 string hlslCode = translator.Translate(structDeclaration);
                 return HLSLTranslationResult.Success(hlslCode, kernelNames, shaderType.Name);
             }
@@ -353,6 +355,46 @@ namespace DivisionEngine
             }
         }
 
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SyntaxTree> SourceTreeCache =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Parses a source file, reusing the tree while the file is unchanged. Shaders
+        /// are translated once at startup, but the editor recompiles on script changes,
+        /// so the cache key includes the write time.
+        /// </summary>
+        private static SyntaxTree GetSyntaxTree(string path)
+        {
+            string key = path + "|" + File.GetLastWriteTimeUtc(path).Ticks;
+            return SourceTreeCache.GetOrAdd(key, _ => CSharpSyntaxTree.ParseText(File.ReadAllText(path), path: path));
+        }
+
+        /// <summary>
+        /// Returns the syntax trees of every C# file in the shader's project, excluding
+        /// the shader's own file. Helper classes live next to the shaders, and their
+        /// bodies can only be translated when they are part of the same compilation.
+        /// </summary>
+        private static IEnumerable<SyntaxTree> GetProjectSyntaxTrees(string shaderSourcePath, SyntaxTree shaderTree)
+        {
+            string? root = Path.GetDirectoryName(Path.GetFullPath(shaderSourcePath));
+            while (root is not null && !Directory.EnumerateFiles(root, "*.csproj").Any())
+                root = Path.GetDirectoryName(root);
+
+            if (root is null) yield break;
+
+            string shaderFullPath = Path.GetFullPath(shaderSourcePath);
+            foreach (string file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories))
+            {
+                if (file.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar) ||
+                    file.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar))
+                    continue;
+
+                if (string.Equals(Path.GetFullPath(file), shaderFullPath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                yield return GetSyntaxTree(file);
+            }
+        }
         private static StructDeclarationSyntax? FindStructDeclaration(SyntaxNode root, string structName) => root.DescendantNodes()
                 .OfType<StructDeclarationSyntax>()
                 .FirstOrDefault(structDecl => structDecl.Identifier.Text == structName);

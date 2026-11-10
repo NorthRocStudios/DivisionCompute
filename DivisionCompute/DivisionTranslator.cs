@@ -24,12 +24,14 @@ namespace DivisionEngine
     /// element structs are resolved and emitted from metadata, so element types do
     /// not have to be declared in the same source file as the shader.
     /// </param>
-    public class DivisionTranslator(SemanticModel semanticModel, Type? shaderType = null) : CSharpSyntaxWalker
+    public class DivisionTranslator : CSharpSyntaxWalker
     {
         // Translation vars
-        private readonly SemanticModel semanticModel = semanticModel;
-        private readonly Dictionary<string, FieldInfo> shaderFields = BuildShaderFields(shaderType);
-        private readonly Dictionary<string, Type> knownTypes = BuildKnownTypes(shaderType);
+        private SemanticModel semanticModel;
+        private readonly Type? shaderType;
+        private readonly CSharpCompilation? compilation;
+        private readonly Dictionary<string, FieldInfo> shaderFields;
+        private readonly Dictionary<string, Type> knownTypes;
         private readonly StringBuilder hlsl = new StringBuilder();
         private int indentLvl = 0;
         private int? threadsX, threadsY, threadsZ;
@@ -39,9 +41,37 @@ namespace DivisionEngine
         private readonly List<string> variableDeclarations = [];
         private readonly List<string> structDeclarations = [];
         private readonly List<string> inlineFunctions = [];
+        private readonly List<string> inlineFunctionSignatures = [];
+        private readonly List<string> constantDeclarations = [];
         private readonly List<string> kernelNames = [];
         private readonly HashSet<string> processedStructs = [];
         private readonly Dictionary<string, string> bufferLengthHelpers = [];
+
+        // External static helper classes (ShaderMath, PBR, ...) translated on demand.
+        private readonly Dictionary<string, string> helperMethodNames = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> helperMethodBodies = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> helperConstantNames = new(StringComparer.Ordinal);
+        private readonly HashSet<string> helperMethodsInProgress = new(StringComparer.Ordinal);
+        private readonly HashSet<string> emittedNames = new(StringComparer.Ordinal);
+        private INamedTypeSymbol? currentHelperType;
+
+        /// <summary>
+        /// Creates a translator for one shader struct.
+        /// </summary>
+        /// <param name="semanticModel">Semantic model of the shader's source file.</param>
+        /// <param name="shaderType">Runtime type of the shader struct, when known.</param>
+        /// <param name="compilation">
+        /// Compilation that includes the shader's source and the source of any helper
+        /// classes it calls. Required to translate external static helper methods.
+        /// </param>
+        public DivisionTranslator(SemanticModel semanticModel, Type? shaderType = null, CSharpCompilation? compilation = null)
+        {
+            this.semanticModel = semanticModel;
+            this.shaderType = shaderType;
+            this.compilation = compilation;
+            shaderFields = BuildShaderFields(shaderType);
+            knownTypes = BuildKnownTypes(shaderType);
+        }
 
         /// <summary>
         /// Translates C# source code to HLSL source code.
@@ -69,6 +99,11 @@ namespace DivisionEngine
             // mentions them. Reflection-emitted structs are added dependencies-first.
             foreach (string structDecl in structDeclarations) hlsl.AppendLine(structDecl);
 
+            // Constants (shader struct consts and helper-class consts) come next so
+            // the uniform buffer and every function can reference them.
+            foreach (string constant in constantDeclarations) hlsl.AppendLine(constant);
+            if (constantDeclarations.Count > 0) hlsl.AppendLine();
+
             // Shader uniforms (plain fields) live in one constant buffer at b0, the
             // same shape Unity's compute shaders use: declare fields, set them by
             // name from C#, read them as plain identifiers in HLSL.
@@ -93,7 +128,18 @@ namespace DivisionEngine
                 hlsl.AppendLine("SamplerState DivisionDefaultSampler : register(s0);");
 
             foreach (string helper in bufferLengthHelpers.Values) hlsl.AppendLine(helper);
+
+            // HLSL requires a declaration before use. Emit prototypes so helper
+            // methods can call each other regardless of the order they appear in the
+            // C# struct (C# has no such ordering rule).
+            foreach (string signature in inlineFunctionSignatures) hlsl.AppendLine($"{signature};");
+            if (inlineFunctionSignatures.Count > 0) hlsl.AppendLine();
+
             foreach (string func in inlineFunctions) hlsl.AppendLine(func);
+
+            // Helper-class functions are discovered while translating bodies; the
+            // prototypes above make their order irrelevant.
+            foreach (string helper in helperMethodBodies.Values) hlsl.AppendLine(helper);
 
             if (kernelDefinitions.Count > 0) hlsl.AppendLine();
 
@@ -187,6 +233,8 @@ namespace DivisionEngine
             var variables = node.Declaration.Variables;
             foreach (VariableDeclaratorSyntax variable in variables) // Works for nested initialization, eg. int a = 1, b = 3, c = 3;
             {
+                ShaderStructLayout.ValidateHlslIdentifier(
+                    variable.Identifier.Text, "local variable '" + variable.Identifier.Text + "'");
                 WriteIndent();
                 hlsl.Append($"{hlslType} {variable.Identifier.Text}");
                 if (variable.Initializer != null)
@@ -329,6 +377,51 @@ namespace DivisionEngine
                 Visit(node.Statement);
                 indentLvl--;
             }
+        }
+
+        /// <summary>
+        /// Translates switch statements. HLSL supports C# style switch/case/default.
+        /// </summary>
+        public override void VisitSwitchStatement(SwitchStatementSyntax node)
+        {
+            WriteIndent();
+            hlsl.Append("switch (");
+            Visit(node.Expression);
+            hlsl.AppendLine(")");
+            WriteIndent();
+            hlsl.AppendLine("{");
+            indentLvl++;
+
+            foreach (SwitchSectionSyntax section in node.Sections)
+            {
+                foreach (SwitchLabelSyntax label in section.Labels)
+                {
+                    WriteIndent();
+                    switch (label)
+                    {
+                        case CaseSwitchLabelSyntax caseLabel:
+                            hlsl.Append("case ");
+                            Visit(caseLabel.Value);
+                            hlsl.AppendLine(":");
+                            break;
+                        case DefaultSwitchLabelSyntax:
+                            hlsl.AppendLine("default:");
+                            break;
+                        default:
+                            throw new NotSupportedException(
+                                $"Switch label '{label}' is not supported in shader code. " +
+                                "Use plain case/default labels with constant values.");
+                    }
+                }
+
+                indentLvl++;
+                foreach (StatementSyntax statement in section.Statements) Visit(statement);
+                indentLvl--;
+            }
+
+            indentLvl--;
+            WriteIndent();
+            hlsl.AppendLine("}");
         }
 
         /// <summary>
@@ -518,6 +611,22 @@ namespace DivisionEngine
             SymbolInfo symbolInfo = semanticModel.GetSymbolInfo(node);
             if (symbolInfo.Symbol is IMethodSymbol method)
             {
+                // Static helper classes (ShaderMath, PBR, SDFPrimitives, ...) are
+                // translated on demand into HLSL functions and called by their
+                // mangled name, because HLSL has no namespaces or overloads.
+                if (IsExternalHelperMethod(method))
+                {
+                    hlsl.Append(EnsureHelperMethod(method));
+                    hlsl.Append('(');
+                    for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
+                    {
+                        if (i > 0) hlsl.Append(", ");
+                        Visit(node.ArgumentList.Arguments[i].Expression);
+                    }
+                    hlsl.Append(')');
+                    return;
+                }
+
                 hlsl.Append(method.Name);
                 hlsl.Append('(');
                 for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
@@ -639,6 +748,23 @@ namespace DivisionEngine
         {
             string memberName = node.Name.Identifier.Text;
 
+            // Helper-class constants (PBR.RECIPROCAL_PI) and enum members are static
+            // fields; HLSL has neither namespaces nor enums, so inline them.
+            if (semanticModel.GetSymbolInfo(node).Symbol is IFieldSymbol staticField && staticField.IsStatic)
+            {
+                if (staticField.ContainingType.TypeKind == TypeKind.Enum && staticField.HasConstantValue && staticField.ConstantValue is not null)
+                {
+                    hlsl.Append(LiteralText(staticField.ConstantValue, "int"));
+                    return;
+                }
+
+                if (IsExternalHelperType(staticField.ContainingType))
+                {
+                    hlsl.Append(EnsureHelperConstant(staticField));
+                    return;
+                }
+            }
+
             // StructuredBuffer exposes GetDimensions, Load, and operator[], not a
             // Length/Count property. Route the C# convenience properties through a
             // generated helper so the shader author can keep using buffer.Length.
@@ -663,8 +789,16 @@ namespace DivisionEngine
         {
             string text = node.Token.Text;
 
-            // Remove 'f' suffix from float literals
-            if (text.EndsWith('f') || text.EndsWith('F')) text = text.TrimEnd('f', 'F');
+            // HLSL reads an unsuffixed whole number as an int, so dropping the C#
+            // float suffix from "1f" would silently turn "1f / 6f" into integer
+            // division. Keep the value a float by always emitting a decimal point.
+            if (text.EndsWith('f') || text.EndsWith('F'))
+            {
+                text = text.TrimEnd('f', 'F');
+                if (!text.Contains('.') && !text.Contains('e') && !text.Contains('E'))
+                    text += ".0";
+            }
+
             hlsl.Append(text);
         }
 
@@ -690,6 +824,22 @@ namespace DivisionEngine
         /// </summary>
         public override void VisitIdentifierName(IdentifierNameSyntax node)
         {
+            // Inside a helper class, a bare constant reference (for example "Gain")
+            // belongs to that class and needs its mangled name. Looking at the current
+            // helper's members keeps this O(1); a semantic lookup per identifier would
+            // be far too slow for a large shader.
+            if (currentHelperType is not null)
+            {
+                foreach (ISymbol member in currentHelperType.GetMembers(node.Identifier.Text))
+                {
+                    if (member is IFieldSymbol field && field.IsStatic && field.HasConstantValue)
+                    {
+                        hlsl.Append(EnsureHelperConstant(field));
+                        return;
+                    }
+                }
+            }
+
             hlsl.Append(node.Identifier.Text);
         }
 
@@ -784,9 +934,105 @@ namespace DivisionEngine
         #region InlineFunctionTranslation
 
         /// <summary>
+        /// Emits a <c>const</c> or <c>static readonly</c> shader struct field as an HLSL
+        /// <c>static const</c>. Shader code commonly stores tuning values this way
+        /// (shadow epsilon, pi, reciprocal pi, ...), and HLSL needs them declared.
+        /// </summary>
+        private void CollectConstantField(FieldDeclarationSyntax field)
+        {
+            foreach (VariableDeclaratorSyntax variable in field.Declaration.Variables)
+            {
+                if (variable.Initializer is null)
+                    throw new NotSupportedException(
+                        $"Static shader field '{variable.Identifier.Text}' has no initializer. " +
+                        "Shader constants must be initialized with a compile-time value.");
+
+                ShaderStructLayout.ValidateHlslIdentifier(variable.Identifier.Text, $"shader constant '{variable.Identifier.Text}'");
+
+                ITypeSymbol? typeSymbol = semanticModel.GetTypeInfo(field.Declaration.Type).Type;
+                string hlslType = ConvertType(typeSymbol);
+                string value = EvaluateConstantText(variable.Initializer.Value, semanticModel, hlslType);
+
+                constantDeclarations.Add($"static const {hlslType} {variable.Identifier.Text} = {value};");
+            }
+        }
+
+        /// <summary>
+        /// Renders a compile-time constant expression as HLSL literal text, falling
+        /// back to translating the expression when Roslyn cannot fold it.
+        /// </summary>
+        private string EvaluateConstantText(ExpressionSyntax expression, SemanticModel model, string hlslType)
+        {
+            Optional<object?> constant = model.GetConstantValue(expression);
+            if (constant.HasValue && constant.Value is not null)
+                return LiteralText(constant.Value, hlslType);
+
+            _ = hlslType;
+            return TranslateExpression(expression, model);
+        }
+
+        /// <summary>
+        /// Formats a CLR constant as an HLSL literal.
+        /// </summary>
+        private static string LiteralText(object value, string hlslType)
+        {
+            string text = value switch
+            {
+                float f => f.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+                double d => d.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+                bool b => b ? "true" : "false",
+                _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "0",
+            };
+
+            // HLSL reads a whole number without a decimal point as an int, which would
+            // turn constants like "1f / 6f" into integer division.
+            bool isFloatType = hlslType is "float" or "float2" or "float3" or "float4" or "half";
+            if (isFloatType && text.Length > 0 && !text.Contains('.') && !text.Contains('e') && !text.Contains('E'))
+                text += ".0";
+
+            return text;
+        }
+
+        /// <summary>
+        /// Translates a single expression to HLSL text without disturbing the main
+        /// output buffer.
+        /// </summary>
+        private string TranslateExpression(ExpressionSyntax expression, SemanticModel model)
+        {
+            SemanticModel savedModel = semanticModel;
+            string savedHlsl = hlsl.ToString();
+            int savedIndent = indentLvl;
+
+            try
+            {
+                semanticModel = model;
+                hlsl.Clear();
+                indentLvl = 0;
+                Visit(expression);
+                return hlsl.ToString();
+            }
+            finally
+            {
+                semanticModel = savedModel;
+                hlsl.Clear();
+                hlsl.Append(savedHlsl);
+                indentLvl = savedIndent;
+            }
+        }
+
+        /// <summary>
         /// Translates a non-kernel method to an HLSL inline function.
         /// </summary>
         private void TranslateInlineFunction(MethodDeclarationSyntax method)
+            => inlineFunctions.Add(EmitFunction(method, method.Identifier.Text));
+
+        /// <summary>
+        /// Emits an HLSL function for a C# method and registers its prototype so the
+        /// definition order does not matter.
+        /// </summary>
+        /// <param name="method">The C# method to translate.</param>
+        /// <param name="emittedName">The HLSL function name to use.</param>
+        private string EmitFunction(MethodDeclarationSyntax method, string emittedName)
         {
             StringBuilder builder = new StringBuilder();
             ITypeSymbol? returnType = semanticModel.GetDeclaredSymbol(method)?.ReturnType;
@@ -796,15 +1042,28 @@ namespace DivisionEngine
             // Parameter setup
             foreach (ParameterSyntax param in method.ParameterList.Parameters)
             {
+                ShaderStructLayout.ValidateHlslIdentifier(
+                    param.Identifier.Text, "parameter '" + param.Identifier.Text + "'");
+
                 ITypeSymbol? paramType = semanticModel.GetTypeInfo(param.Type!).Type;
                 string hlslParamType = ConvertType(paramType);
-                parameters.Add($"{hlslParamType} {param.Identifier.Text}");
+                parameters.Add($"{ParameterModifier(param)}{hlslParamType} {param.Identifier.Text}");
             }
 
             // Function signature
-            builder.Append($"{hlslReturnType} {method.Identifier.Text}({string.Join(", ", parameters)})");
+            string signature = $"{hlslReturnType} {emittedName}({string.Join(", ", parameters)})";
+            inlineFunctionSignatures.Add(signature);
+            builder.Append(signature);
             builder.AppendLine();
             builder.AppendLine("{");
+
+            // HLSL reads parameters by value, but an expression-bodied C# method has
+            // no statement block; reject those with a clear message instead of
+            // dereferencing a null body.
+            if (method.Body is null)
+                throw new NotSupportedException(
+                    $"Shader function '{method.Identifier.Text}' uses an expression body. " +
+                    "Use a block body with an explicit return statement in shader code.");
 
             // Temporarily store current HLSL content and switch to new builder for the body
             string originalHlsl = hlsl.ToString();
@@ -812,7 +1071,7 @@ namespace DivisionEngine
             int oldIndent = indentLvl;
             indentLvl = 1;
 
-            foreach (StatementSyntax statement in method.Body!.Statements) Visit(statement);
+            foreach (StatementSyntax statement in method.Body.Statements) Visit(statement);
 
             string body = hlsl.ToString();
             builder.Append(body);
@@ -822,9 +1081,19 @@ namespace DivisionEngine
             indentLvl = oldIndent;
 
             builder.AppendLine("}");
-            inlineFunctions.Add(builder.ToString());
+            return builder.ToString();
         }
 
+        /// <summary>
+        /// Maps a C# parameter modifier to its HLSL equivalent. HLSL has no <c>ref</c>,
+        /// so <c>ref</c> becomes <c>inout</c>.
+        /// </summary>
+        private static string ParameterModifier(ParameterSyntax param)
+        {
+            if (param.Modifiers.Any(modifier => modifier.Text == "out")) return "out ";
+            if (param.Modifiers.Any(modifier => modifier.Text == "ref")) return "inout ";
+            return string.Empty;
+        }
         /// <summary>
         /// Discovers all non-kernel methods (inline functions) in the shader struct.
         /// </summary>
@@ -921,6 +1190,7 @@ namespace DivisionEngine
                 SpecialType.System_Single => "float",
                 SpecialType.System_Double => "double",
                 SpecialType.System_Int32 => "int",
+                SpecialType.System_Void => "void",
                 SpecialType.System_UInt32 => "uint",
                 SpecialType.System_Boolean => "bool",
                 _ => typeSymbol.Name // float3, int2, etc.
@@ -940,7 +1210,13 @@ namespace DivisionEngine
         {
             foreach (FieldDeclarationSyntax field in structDeclaration.Members.OfType<FieldDeclarationSyntax>())
             {
-                if (field.Modifiers.Any(modifier => modifier.Text == "static")) continue;
+                // const fields are implicitly static in C# but carry no "static"
+                // modifier, so both spellings have to be checked.
+                if (field.Modifiers.Any(modifier => modifier.Text is "static" or "const"))
+                {
+                    CollectConstantField(field);
+                    continue;
+                }
 
                 bool isShaderResource = field.AttributeLists // Check if this field has ShaderResource attribute
                     .SelectMany(list => list.Attributes)
@@ -993,6 +1269,8 @@ namespace DivisionEngine
         /// <exception cref="NotSupportedException">If the type is not supported as a shader resource</exception>
         private string? TranslateResourceField(TypeSyntax fieldType, string fieldName, FieldInfo? runtimeField)
         {
+            ShaderStructLayout.ValidateHlslIdentifier(fieldName, $"shader resource '{fieldName}'");
+
             if (fieldType is IdentifierNameSyntax identifier) // Test for sampler type
             {
                 if (identifier.Identifier.Text == "Sampler") return $"SamplerState {fieldName};";
@@ -1268,8 +1546,134 @@ namespace DivisionEngine
         /// <summary>
         /// Writes an indentation to the HLSL string builder.
         /// </summary>
-        private void WriteIndent() => hlsl.Append(' ', indentLvl * 4);
+        /// <summary>
+        /// True when a method belongs to a shared static helper class (for example
+        /// <c>ShaderMath</c> or <c>PBR</c>) that has to be translated on demand,
+        /// rather than to the shader struct or to DivisionMath's intrinsic class.
+        /// </summary>
+        private bool IsExternalHelperMethod(IMethodSymbol method)
+        {
+            if (!method.IsStatic) return false;
+            if (method.MethodKind != MethodKind.Ordinary) return false;
+            return IsExternalHelperType(method.ContainingType);
+        }
 
+        /// <summary>
+        /// True when the type is a user-defined helper class whose methods are emitted
+        /// into the shader. HLSL has no namespaces, so their methods are translated and
+        /// name-mangled. DivisionMath's <c>math</c> class and framework types are
+        /// excluded: the former maps to HLSL intrinsics, the latter must be replaced
+        /// with <c>math.*</c> calls in shader source.
+        /// </summary>
+        private bool IsExternalHelperType(INamedTypeSymbol? type)
+        {
+            if (type is null) return false;
+            if (type.TypeKind != TypeKind.Class) return false;
+
+            string? namespaceName = type.ContainingNamespace?.ToDisplayString();
+            if (namespaceName is "DivisionEngine.MathLib" && type.Name == "math") return false;
+            if (namespaceName is not null && namespaceName.StartsWith("System", StringComparison.Ordinal)) return false;
+
+            string? shaderFullName = shaderType?.FullName;
+            if (shaderFullName is not null && type.ToDisplayString() == shaderFullName) return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// Returns the HLSL function name for a helper method, translating its body the
+        /// first time it is referenced. Overloads and same-named methods from different
+        /// classes get distinct mangled names because HLSL supports neither namespaces
+        /// nor overloads.
+        /// </summary>
+        private string EnsureHelperMethod(IMethodSymbol method)
+        {
+            string key = HelperKey(method);
+            if (helperMethodNames.TryGetValue(key, out string? existing)) return existing;
+
+            string baseName = method.ContainingType.Name + "_" + method.Name;
+            string name = baseName;
+            int suffix = 2;
+            while (!emittedNames.Add(name))
+                name = baseName + "_" + suffix++;
+
+            helperMethodNames[key] = name;
+
+            // Guard against recursive helper calls (A calls B calls A) while a body is
+            // still being translated: the prototype above makes the call valid anyway.
+            if (!helperMethodsInProgress.Add(key)) return name;
+
+            try
+            {
+                if (compilation is null)
+                    throw new NotSupportedException(
+                        $"Shader calls helper method '{method.ContainingType.Name}.{method.Name}'. " +
+                        "Translating shared helper classes requires the project sources; compile the shader " +
+                        "through DivisionShaderCompiler or DivisionComputeContext.");
+
+                if (method.DeclaringSyntaxReferences.FirstOrDefault() is not SyntaxReference reference ||
+                    reference.GetSyntax() is not MethodDeclarationSyntax declaration)
+                {
+                    throw new NotSupportedException(
+                        $"Could not find the source of helper method '{method.ContainingType.Name}.{method.Name}'. " +
+                        "Helper classes must be compiled from source in the same project as the shader.");
+                }
+
+                SemanticModel helperModel = compilation.GetSemanticModel(declaration.SyntaxTree);
+                SemanticModel savedModel = semanticModel;
+                INamedTypeSymbol? savedHelperType = currentHelperType;
+                try
+                {
+                    semanticModel = helperModel;
+                    currentHelperType = method.ContainingType;
+                    helperMethodBodies[name] = EmitFunction(declaration, name);
+                }
+                finally
+                {
+                    semanticModel = savedModel;
+                    currentHelperType = savedHelperType;
+                }
+            }
+            finally
+            {
+                helperMethodsInProgress.Remove(key);
+            }
+
+            return name;
+        }
+
+        /// <summary>
+        /// Returns the HLSL <c>static const</c> name for a helper class constant,
+        /// emitting it the first time it is referenced.
+        /// </summary>
+        private string EnsureHelperConstant(IFieldSymbol field)
+        {
+            string key = field.ContainingType.ToDisplayString() + "." + field.Name;
+            if (helperConstantNames.TryGetValue(key, out string? existing)) return existing;
+
+            string baseName = field.ContainingType.Name + "_" + field.Name;
+            string name = baseName;
+            int suffix = 2;
+            while (!emittedNames.Add(name))
+                name = baseName + "_" + suffix++;
+
+            helperConstantNames[key] = name;
+
+            if (!field.HasConstantValue || field.ConstantValue is null)
+                throw new NotSupportedException(
+                    $"Helper constant '{field.ContainingType.Name}.{field.Name}' is not a compile-time constant. " +
+                    "Only const fields can be referenced from shader code.");
+
+            string hlslType = ConvertType(field.Type);
+            constantDeclarations.Add($"static const {hlslType} {name} = {LiteralText(field.ConstantValue, hlslType)};");
+            return name;
+        }
+
+        private static string HelperKey(IMethodSymbol method)
+            => method.ContainingType.ToDisplayString() + "." + method.Name + "(" +
+               string.Join(",", method.Parameters.Select(parameter => parameter.Type.ToDisplayString())) + ")";
+
+        private void WriteIndent() => hlsl.Append(' ', indentLvl * 4);
         #endregion HelperFunctions
     }
 }

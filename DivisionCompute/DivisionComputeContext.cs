@@ -228,12 +228,70 @@ namespace DivisionEngine
             => new(Device, count);
 
         /// <summary>
+        /// Creates a typed buffer and uploads <paramref name="data"/>. The buffer can be
+        /// bound to a <c>Buffer&lt;T&gt;</c> shader field.
+        /// </summary>
+        /// <typeparam name="T">A scalar or vector with a matching DXGI format.</typeparam>
+        /// <param name="data">The initial element data. Must not be empty.</param>
+        public Buffer<T> CreateBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
+            => new(Device, data);
+
+        /// <summary>
+        /// Creates a zero-initialized read-write typed buffer. The buffer can be bound
+        /// to an <c>RWBuffer&lt;T&gt;</c> shader field.
+        /// </summary>
+        /// <typeparam name="T">A scalar or vector with a matching DXGI format.</typeparam>
+        /// <param name="count">Number of elements; must be positive.</param>
+        public RWBuffer<T> CreateRWBuffer<T>(int count) where T : unmanaged
+            => new(Device, count);
+
+        /// <summary>
+        /// Creates a read-write typed buffer and uploads <paramref name="data"/>.
+        /// </summary>
+        /// <typeparam name="T">A scalar or vector with a matching DXGI format.</typeparam>
+        /// <param name="data">The initial element data. Must not be empty.</param>
+        public RWBuffer<T> CreateRWBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
+            => new(Device, data);
+
+        /// <summary>
         /// Creates a read-write structured buffer and uploads <paramref name="data"/>.
         /// </summary>
         /// <typeparam name="T">An unmanaged, sequential element struct.</typeparam>
         /// <param name="data">The initial element data. Must not be empty.</param>
         public RWStructuredBuffer<T> CreateRWStructuredBuffer<T>(ReadOnlySpan<T> data) where T : unmanaged
             => new(Device, data);
+
+        /// <summary>
+        /// Raised the first time <see cref="CheckDeviceLost"/> observes that the D3D11
+        /// device has been removed.
+        /// </summary>
+        public event Action<string>? DeviceLost;
+
+        private bool deviceLostRaised;
+
+        /// <summary>
+        /// True when D3D11 reports the device as removed.
+        /// </summary>
+        public bool IsDeviceLost => Device.DeviceRemovedReason.Failure;
+
+        /// <summary>
+        /// Polls the device state and raises <see cref="DeviceLost"/> once when the
+        /// device has been removed. Call once per frame.
+        /// </summary>
+        /// <returns>True when the device is lost.</returns>
+        public bool CheckDeviceLost()
+        {
+            Result reason = Device.DeviceRemovedReason;
+            if (reason.Success) return false;
+
+            if (!deviceLostRaised)
+            {
+                deviceLostRaised = true;
+                DeviceLost?.Invoke(reason.Description ?? "Device removed");
+            }
+
+            return true;
+        }
 
         /// <inheritdoc/>
         public void Dispose()

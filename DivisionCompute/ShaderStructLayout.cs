@@ -331,7 +331,14 @@ namespace DivisionEngine
             }
         }
 
-        private static void ValidateHlslIdentifier(string name, string description)
+        /// <summary>
+        /// Validates a shader field name as an HLSL identifier: ASCII letters,
+        /// digits, and underscores, and not a reserved word.
+        /// </summary>
+        /// <param name="name">The field or struct name.</param>
+        /// <param name="description">What the name belongs to, for the diagnostic.</param>
+        /// <exception cref="NotSupportedException">If the name cannot be emitted into HLSL.</exception>
+        internal static void ValidateHlslIdentifier(string name, string description)
         {
             if (string.IsNullOrEmpty(name) ||
                 !(char.IsAsciiLetter(name[0]) || name[0] == '_') ||
@@ -343,7 +350,7 @@ namespace DivisionEngine
 
             if (HlslKeywords.Contains(name))
                 throw new NotSupportedException(
-                    $"The {description} name '{name}' is reserved in HLSL. Rename the field or struct.");
+                    $"The {description} name '{name}' is reserved in HLSL. Rename it (for example '{name}Index').");
         }
 
         private static HashSet<string> BuildVectorTypeNames()

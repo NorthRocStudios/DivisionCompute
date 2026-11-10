@@ -100,7 +100,7 @@ namespace DivisionEngine.Graphics
     /// <summary>
     /// Read-only typed buffer. Translates to HLSL <c>Buffer&lt;T&gt;</c>.
     /// </summary>
-    public sealed class Buffer<T>
+    public sealed partial class Buffer<T>
     {
         /// <summary>Reads the element at <paramref name="index"/>. Shader-only.</summary>
         public T this[int index] => throw new NotSupportedException();
@@ -111,7 +111,7 @@ namespace DivisionEngine.Graphics
     /// <summary>
     /// Read-write typed buffer. Translates to HLSL <c>RWBuffer&lt;T&gt;</c>.
     /// </summary>
-    public sealed class RWBuffer<T>
+    public sealed partial class RWBuffer<T>
     {
         /// <summary>Reads or writes the element at <paramref name="index"/>. Shader-only.</summary>
         public T this[int index]

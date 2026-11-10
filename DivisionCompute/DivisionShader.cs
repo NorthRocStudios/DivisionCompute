@@ -466,6 +466,34 @@ namespace DivisionEngine
         }
 
         /// <summary>
+        /// Binds a <see cref="Buffer{T}"/> to a <c>Buffer&lt;T&gt;</c> shader field.
+        /// </summary>
+        public void SetBuffer<T>(string fieldName, Buffer<T> buffer) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(buffer);
+            SetSrv(fieldName, buffer.Srv);
+        }
+
+        /// <summary>
+        /// Binds the read view of an <see cref="RWBuffer{T}"/> to a <c>Buffer&lt;T&gt;</c>
+        /// shader field.
+        /// </summary>
+        public void SetBuffer<T>(string fieldName, RWBuffer<T> buffer) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(buffer);
+            SetSrv(fieldName, buffer.Srv);
+        }
+
+        /// <summary>
+        /// Binds an <see cref="RWBuffer{T}"/> to an <c>RWBuffer&lt;T&gt;</c> shader field.
+        /// </summary>
+        public void SetRWBuffer<T>(string fieldName, RWBuffer<T> buffer) where T : unmanaged
+        {
+            ArgumentNullException.ThrowIfNull(buffer);
+            SetUav(fieldName, buffer.Uav);
+        }
+
+        /// <summary>
         /// Clears the shader's resource slots, binds all previously-set resources,
         /// dispatches the selected kernel, and unbinds UAVs so that a subsequent
         /// readback copy can succeed.

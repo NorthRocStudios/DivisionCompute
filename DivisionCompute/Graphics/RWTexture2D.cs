@@ -101,6 +101,19 @@ namespace DivisionEngine.Graphics
             => GpuTexture2DHelpers.Write(context, Texture, Width, Height, data);
 
         /// <inheritdoc/>
+        /// <summary>
+        /// Copies this texture into <paramref name="destination"/> on the GPU.
+        /// </summary>
+        /// <param name="context">The immediate context used for the copy.</param>
+        /// <param name="destination">The texture to copy into. Must match size and format.</param>
+        public void CopyTo(ID3D11DeviceContext context, RWTexture2D<T> destination)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(destination);
+            GpuTexture2DHelpers.ValidateCopy(Width, Height, Format, destination.Width, destination.Height, destination.Format);
+            context.CopyResource(destination.Texture, Texture);
+        }
+
         public void Dispose()
         {
             Srv?.Dispose();
@@ -109,3 +122,4 @@ namespace DivisionEngine.Graphics
         }
     }
 }
+

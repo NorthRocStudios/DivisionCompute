@@ -100,6 +100,10 @@ namespace DivisionEngine
 
             foreach (FieldInfo field in GetUniformSourceFields(shaderType))
             {
+                // A uniform becomes an HLSL cbuffer member, so its C# name has to be
+                // a legal (and non-reserved) HLSL identifier.
+                ShaderStructLayout.ValidateHlslIdentifier(field.Name, $"shader uniform '{shaderType.Name}.{field.Name}'");
+
                 UniformKind kind = GetKind(field.FieldType, shaderType, field);
                 int size = GetSize(kind);
 

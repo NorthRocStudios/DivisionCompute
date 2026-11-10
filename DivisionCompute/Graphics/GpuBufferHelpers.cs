@@ -28,6 +28,15 @@ namespace DivisionEngine.Graphics
         }
 
         /// <summary>
+        /// Validates that a type has a typed DXGI format and returns its element size.
+        /// </summary>
+        public static int GetTypedElementSize<T>() where T : unmanaged
+        {
+            _ = DXGIFormatMapper.GetFormat<T>();
+            return System.Runtime.CompilerServices.Unsafe.SizeOf<T>();
+        }
+
+        /// <summary>
         /// Validates an element count and its total byte size.
         /// </summary>
         public static void ValidateCount(int count, int stride)
