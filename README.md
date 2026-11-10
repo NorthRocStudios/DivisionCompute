@@ -38,6 +38,22 @@ You can install DivisionCompute via NuGet:
 dotnet add package NorthRoc.DivisionCompute
 ```
 
+## 🧠 Shader Compilation Cache
+
+Compiling HLSL is the expensive part of the pipeline (D3DCompiler is not fast on
+large, heavily inlined shaders), so a successful compilation is cached on disk:
+
+- Location: `%LOCALAPPDATA%\DivisionEngine\ShaderCache`
+- Key: SHA-256 over the generated HLSL, entry point, profile and compiler flags,
+  so editing a shader invalidates its entry automatically.
+- Override the directory with `DivisionShaderCompiler.CacheDirectory`, or turn
+  caching off entirely with `DIVISION_DISABLE_SHADER_CACHE=1`.
+- Cache writes are best-effort: a missing or unwritable cache simply compiles.
+
+Pass `ShaderFlags.SkipOptimization` / `OptimizationLevel1` to
+`DivisionShaderCompiler.CompileHLSL(result, flags)` when you want to trade code
+quality for compile time.
+
 ## 📦 Structured Buffers
 
 The resource types are both shader field types and CPU-side owners. `StructuredBuffer<T>`

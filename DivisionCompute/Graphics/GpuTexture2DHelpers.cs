@@ -123,6 +123,24 @@ namespace DivisionEngine.Graphics
             int height,
             Format format) where T : unmanaged
         {
+            var result = new T[checked(width * height)];
+            Read(device, context, texture, width, height, format, result);
+            return result;
+        }
+
+        /// <summary>
+        /// Copies the current GPU contents into an existing CPU buffer, so a caller
+        /// that reads back every frame can reuse its array instead of allocating.
+        /// </summary>
+        public static void Read<T>(
+            ID3D11Device device,
+            ID3D11DeviceContext context,
+            ID3D11Texture2D texture,
+            int width,
+            int height,
+            Format format,
+            Span<T> destination) where T : unmanaged
+        {
             ArgumentNullException.ThrowIfNull(device);
             ArgumentNullException.ThrowIfNull(context);
             ArgumentNullException.ThrowIfNull(texture);
@@ -142,6 +160,12 @@ namespace DivisionEngine.Graphics
                 MiscFlags = ResourceOptionFlags.None,
             };
 
+            int elementCount = checked(width * height);
+            if (destination.Length < elementCount)
+                throw new ArgumentException(
+                    $"The destination has {destination.Length} texels but the texture has {elementCount}.",
+                    nameof(destination));
+
             using ID3D11Texture2D staging = device.CreateTexture2D(stagingDescription);
             context.CopyResource(staging, texture);
 
@@ -150,25 +174,22 @@ namespace DivisionEngine.Graphics
             {
                 int elementSize = GetElementSize<T>();
                 int rowBytes = checked(width * elementSize);
-                var result = new T[checked(width * height)];
 
                 unsafe
                 {
                     byte* source = (byte*)mapped.DataPointer;
-                    for (int y = 0; y < height; y++)
+                    fixed (T* destinationPointer = destination)
                     {
-                        fixed (T* destination = &result[y * width])
+                        for (int y = 0; y < height; y++)
                         {
                             System.Buffer.MemoryCopy(
                                 source + (long)y * mapped.RowPitch,
-                                destination,
-                                rowBytes,
+                                destinationPointer + (long)y * width,
+                                (long)elementCount * elementSize - (long)y * rowBytes,
                                 rowBytes);
                         }
                     }
                 }
-
-                return result;
             }
             finally
             {

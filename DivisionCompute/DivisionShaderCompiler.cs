@@ -65,6 +65,19 @@ namespace DivisionEngine
         /// error output on failure.
         /// </returns>
         public static HLSLCompilationResult CompileHLSL(HLSLTranslationResult translatedShader)
+            => CompileHLSL(translatedShader, ShaderFlags.None);
+
+        /// <summary>
+        /// Compiles the HLSL source of a successful translation with explicit
+        /// D3DCompile flags.
+        /// </summary>
+        /// <param name="translatedShader">A successful result from <see cref="TranslateShader"/>.</param>
+        /// <param name="flags">Flags passed to D3DCompile.</param>
+        /// <returns>
+        /// A result containing the compiled bytecode on success, or the D3DCompiler
+        /// error output on failure.
+        /// </returns>
+        public static HLSLCompilationResult CompileHLSL(HLSLTranslationResult translatedShader, ShaderFlags flags)
         {
             ArgumentNullException.ThrowIfNull(translatedShader);
 
@@ -86,11 +99,26 @@ namespace DivisionEngine
 
             foreach (string kernelName in translatedShader.KernelNames)
             {
+                // D3DCompile is extremely slow for the large raymarching shader (its
+                // front end expands the inlined call graph to six-figure instruction
+                // counts), so a successful compilation is cached on disk and reused
+                // until the HLSL or the flags change.
+                byte[]? cachedBytecode = TryReadCachedBytecode(translatedShader, kernelName, flags);
+                if (cachedBytecode is not null)
+                {
+                    kernelBytecodes.Add(cachedBytecode);
+                    debugOutput.AppendLine($"Kernel '{kernelName}': {cachedBytecode.Length} bytes (cache hit)");
+                    continue;
+                }
+
                 Result compileResult = Compiler.Compile(
                     translatedShader.HLSLCode,
+                    null!,
+                    null!,
                     kernelName,
                     translatedShader.ShaderTypeName,
                     "cs_5_0",
+                    flags,
                     out Blob? codeBlob,
                     out Blob? errorBlob);
 
@@ -120,6 +148,7 @@ namespace DivisionEngine
 
                 byte[] bytecode = codeBlob.AsBytes();
                 kernelBytecodes.Add(bytecode);
+                WriteCachedBytecode(translatedShader, kernelName, flags, bytecode);
                 debugOutput.AppendLine($"Kernel '{kernelName}': {bytecode.Length} bytes");
                 if (!string.IsNullOrWhiteSpace(kernelDebug))
                     debugOutput.AppendLine(kernelDebug.TrimEnd());
@@ -284,7 +313,11 @@ namespace DivisionEngine
         /// </summary>
         private static List<MetadataReference> BuildMetadataReferences(Type shaderType)
         {
-            var references = new List<MetadataReference>();
+            // Framework facades first: DivisionMath's public surface mentions
+            // System.Runtime types (math.dot returns System.Single), and Roslyn cannot
+            // bind those members without the facade reference, which silently turns
+            // math.* calls into overload-resolution failures.
+            var references = new List<MetadataReference>(FrameworkReferences.Value);
             var referencePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var visitedAssemblies = new HashSet<Assembly>();
             var visitedTypes = new HashSet<Type>();
@@ -353,6 +386,150 @@ namespace DivisionEngine
                     AddType(field.FieldType);
                 }
             }
+        }
+
+        /// <summary>
+        /// The per-user directory used for compiled shader bytecode when
+        /// <see cref="CacheDirectory"/> is not overridden.
+        /// </summary>
+        public static string DefaultCacheDirectory { get; } = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DivisionEngine",
+            "ShaderCache");
+
+        /// <summary>
+        /// Directory holding compiled shader bytecode. Defaults to
+        /// <see cref="DefaultCacheDirectory"/>; set to null (or define
+        /// DIVISION_DISABLE_SHADER_CACHE=1) to always recompile.
+        /// </summary>
+        public static string? CacheDirectory { get; set; } = DefaultCacheDirectory;
+
+        private static bool CacheDisabled =>
+            CacheDirectory is null ||
+            Environment.GetEnvironmentVariable("DIVISION_DISABLE_SHADER_CACHE") is "1" or "true";
+
+        private static readonly byte[] CacheHeader = "DVSHC1\0"u8.ToArray();
+
+        private static string? CachePath(HLSLTranslationResult shader, string kernelName, ShaderFlags flags)
+        {
+            if (CacheDisabled) return null;
+
+            string keySource = string.Concat(
+                typeof(DivisionShaderCompiler).Assembly.GetName().Version?.ToString() ?? "0",
+                "|", shader.ShaderTypeName, "|", kernelName, "|", flags.ToString(),
+                "|", shader.HLSLCode ?? string.Empty);
+
+            byte[] hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(keySource));
+            string name = Convert.ToHexString(hash, 0, 16).ToLowerInvariant() + ".dxbc";
+            return Path.Combine(CacheDirectory!, name);
+        }
+
+        private static byte[]? TryReadCachedBytecode(HLSLTranslationResult shader, string kernelName, ShaderFlags flags)
+        {
+            string? path = CachePath(shader, kernelName, flags);
+            if (path is null || !File.Exists(path)) return null;
+
+            try
+            {
+                byte[] content = File.ReadAllBytes(path);
+                if (content.Length <= CacheHeader.Length) return null;
+
+                for (int i = 0; i < CacheHeader.Length; i++)
+                    if (content[i] != CacheHeader[i]) return null;
+
+                return content[CacheHeader.Length..];
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+
+        private static void WriteCachedBytecode(HLSLTranslationResult shader, string kernelName, ShaderFlags flags, byte[] bytecode)
+        {
+            string? path = CachePath(shader, kernelName, flags);
+            if (path is null) return;
+
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                using (FileStream stream = File.Create(temporary))
+                {
+                    stream.Write(CacheHeader);
+                    stream.Write(bytecode);
+                }
+                File.Move(temporary, path, overwrite: true);
+            }
+            catch (IOException)
+            {
+                // A cache miss is always safe; a failed write must not fail the shader.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        /// <summary>
+        /// Metadata references for the runtime and framework assemblies, resolved once
+        /// from the trusted platform assembly list so every shader compilation can bind
+        /// framework types that DivisionMath and the engine surface in their signatures.
+        /// </summary>
+        private static readonly Lazy<List<MetadataReference>> FrameworkReferences = new(CreateFrameworkReferences);
+
+        private static List<MetadataReference> CreateFrameworkReferences()
+        {
+            var references = new List<MetadataReference>();
+
+            // The facades that carry the framework types DivisionMath and the engine
+            // mention in their signatures. Referencing the whole TPA list works too but
+            // multiplies the cost of every Roslyn semantic-model query, which dominates
+            // translation time for a large shader.
+            string[] frameworkAssemblies =
+            [
+                "System.Runtime.dll",
+                "System.Runtime.Extensions.dll",
+                "System.Collections.dll",
+                "System.Memory.dll",
+                "System.Runtime.InteropServices.dll",
+                "System.Threading.dll",
+                "System.Threading.Tasks.dll",
+                "System.Numerics.Vectors.dll",
+                "netstandard.dll",
+            ];
+
+            if (AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") is string trustedAssemblies)
+            {
+                foreach (string path in trustedAssemblies.Split(Path.PathSeparator))
+                {
+                    if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
+                    string fileName = Path.GetFileName(path);
+                    if (!frameworkAssemblies.Contains(fileName, StringComparer.OrdinalIgnoreCase)) continue;
+
+                    try
+                    {
+                        references.Add(MetadataReference.CreateFromFile(path));
+                    }
+                    catch (IOException)
+                    {
+                        // A locked assembly simply cannot be referenced; the shader will
+                        // report the resulting missing type if it actually needed it.
+                    }
+                }
+            }
+
+            if (references.Count == 0)
+            {
+                string? corelib = typeof(object).Assembly.Location;
+                if (!string.IsNullOrEmpty(corelib) && File.Exists(corelib))
+                    references.Add(MetadataReference.CreateFromFile(corelib));
+            }
+
+            return references;
         }
 
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SyntaxTree> SourceTreeCache =

@@ -8,7 +8,7 @@
     <Title>Division Compute</Title>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageId>NorthRoc.$(AssemblyName)</PackageId>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <Authors>Rex Woodfield</Authors>
     <Company>NorthRoc Studios</Company>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -16,13 +16,18 @@
     <RepositoryUrl>https://github.com/NorthRocStudios/DivisionCompute</RepositoryUrl>
     <PackageTags>compiler;hlsl;shader;translate;compute;gpu;cpu;csharp;windows</PackageTags>
     <PackageReleaseNotes>Added:
-- Static helper-class calls (ShaderMath.RotateVector(...))
-- out / inout parameters
-- switch statements
-- const / static readonly fields
-- CPU-side typed buffers
-- GPU→GPU copy (Texture2D&lt;T&gt;.CopyTo(ctx, dest))
-- Device-lost detection</PackageReleaseNotes>
+- C# 7 out-argument declarations and discards (Foo(..., out int x), out _)
+- Zero-initialized struct construction (new T()) and default / default(T) values
+- float.MaxValue / MinValue / Epsilon and int/uint limit constants in shader code
+- [loop] hints on emitted loops (keeps fxc compile time and code size down)
+- Semantic-model cache for translated helper classes (large shaders translate ~200x faster)
+- Disk bytecode cache for compiled shaders (opt out with DIVISION_DISABLE_SHADER_CACHE=1)
+- GetData(ctx, Span&lt;T&gt;) readback overloads for every buffer/texture wrapper
+- Explicit ShaderFlags overload on CompileHLSL
+Fixed:
+- Hexadecimal integer literals ending in F (0xFF) were rewritten as 0x.0
+- Helper methods called with nested math.* arguments failed overload resolution
+- Roslyn compilation missed the framework facade references (System.Runtime)</PackageReleaseNotes>
     <Copyright>Copyright (c) 2026 Rex Woodfield and NorthRoc Studios contributors</Copyright>
     <RootNamespace>DivisionEngine</RootNamespace>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

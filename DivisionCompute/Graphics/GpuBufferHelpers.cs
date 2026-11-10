@@ -60,10 +60,32 @@ namespace DivisionEngine.Graphics
             int count,
             int stride) where T : unmanaged
         {
+            var result = new T[count];
+            Read(device, context, buffer, count, stride, result);
+            return result;
+        }
+
+        /// <summary>
+        /// Copies a GPU buffer into an existing CPU buffer, so a caller that reads
+        /// back every frame can reuse its array instead of allocating.
+        /// </summary>
+        public static void Read<T>(
+            ID3D11Device device,
+            ID3D11DeviceContext context,
+            ID3D11Buffer buffer,
+            int count,
+            int stride,
+            Span<T> destination) where T : unmanaged
+        {
             ArgumentNullException.ThrowIfNull(device);
             ArgumentNullException.ThrowIfNull(context);
             ArgumentNullException.ThrowIfNull(buffer);
             ValidateCount(count, stride);
+
+            if (destination.Length < count)
+                throw new ArgumentException(
+                    $"The destination has {destination.Length} elements but the buffer has {count}.",
+                    nameof(destination));
 
             uint sizeInBytes = checked((uint)((long)count * stride));
             using ID3D11Buffer staging = device.CreateBuffer(
@@ -76,19 +98,17 @@ namespace DivisionEngine.Graphics
             MappedSubresource mapped = context.Map(staging, 0, MapMode.Read, MapFlags.None);
             try
             {
-                var result = new T[count];
                 unsafe
                 {
-                    fixed (T* destination = result)
+                    fixed (T* destinationPointer = destination)
                     {
                         System.Buffer.MemoryCopy(
                             mapped.DataPointer.ToPointer(),
-                            destination,
-                            sizeInBytes,
+                            destinationPointer,
+                            (long)destination.Length * System.Runtime.CompilerServices.Unsafe.SizeOf<T>(),
                             sizeInBytes);
                     }
                 }
-                return result;
             }
             finally
             {

@@ -89,6 +89,13 @@ namespace DivisionEngine.Graphics
             => GpuTexture2DHelpers.Read<T>(_device, context, Texture, Width, Height, Format);
 
         /// <summary>
+        /// Copies the current GPU contents into an existing CPU array. Reuse this
+        /// overload for per-frame readbacks.
+        /// </summary>
+        public void GetData(ID3D11DeviceContext context, Span<T> destination)
+            => GpuTexture2DHelpers.Read<T>(_device, context, Texture, Width, Height, Format, destination);
+
+        /// <summary>
         /// Uploads a complete CPU image into the texture.
         /// </summary>
         public void SetData(ID3D11DeviceContext context, ReadOnlySpan<T> data)
@@ -108,6 +115,9 @@ namespace DivisionEngine.Graphics
             context.CopyResource(destination.Texture, Texture);
         }
 
+        /// <summary>
+        /// Releases the texture and its view.
+        /// </summary>
         public void Dispose()
         {
             Srv?.Dispose();

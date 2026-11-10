@@ -18,12 +18,6 @@ namespace DivisionEngine
     /// <summary>
     /// Syntax walker that translates C# source code to HLSL source code based on the ruleset defined for the Division Engine.
     /// </summary>
-    /// <param name="semanticModel">Semantic model used for translation</param>
-    /// <param name="shaderType">
-    /// Optional runtime type of the shader struct. When supplied, structured-buffer
-    /// element structs are resolved and emitted from metadata, so element types do
-    /// not have to be declared in the same source file as the shader.
-    /// </param>
     public class DivisionTranslator : CSharpSyntaxWalker
     {
         // Translation vars
@@ -152,6 +146,17 @@ namespace DivisionEngine
         }
 
         /// <summary>
+        /// Statements that declare out-arguments get those locals emitted first.
+        /// </summary>
+        public override void Visit(SyntaxNode? node)
+        {
+            if (node is StatementSyntax and not BlockSyntax)
+                HoistOutArguments(node);
+
+            base.Visit(node);
+        }
+
+        /// <summary>
         /// Translates a kernel into a standalone string while preserving the main
         /// output buffer.
         /// </summary>
@@ -208,6 +213,68 @@ namespace DivisionEngine
         /// <summary>
         /// Translates a single kernel based on C# equivalent method.
         /// </summary>
+        /// <summary>
+        /// Hoists C# 7 out-argument declarations ("out int offset", "out int2 res")
+        /// and out-discards ("out _") above the statement that uses them. HLSL cannot
+        /// declare a variable inside an argument list, so "GetMipInfo(m, lvl, out int
+        /// offset)" has to become "int offset; GetMipInfo(m, lvl, offset);".
+        /// </summary>
+        private void HoistOutArguments(SyntaxNode statement)
+        {
+            outArgumentLocals.Clear();
+
+            foreach (ArgumentSyntax argument in statement.DescendantNodes().OfType<ArgumentSyntax>())
+            {
+                if (!argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword)) continue;
+
+                // Only this statement's own expressions: nested statements hoist their
+                // own out-arguments when they are visited.
+                if (argument.Ancestors().OfType<StatementSyntax>().FirstOrDefault() != statement) continue;
+
+                string? typeName;
+                string name;
+
+                if (argument.Expression is DeclarationExpressionSyntax declaration &&
+                    declaration.Designation is SingleVariableDesignationSyntax designation)
+                {
+                    typeName = ConvertType(semanticModel.GetTypeInfo(declaration.Type).Type);
+                    name = designation.Identifier.Text;
+                }
+                else if (argument.Expression is IdentifierNameSyntax identifier && identifier.Identifier.Text == "_")
+                {
+                    // "out _" has no variable to name; the callee still requires one.
+                    InvocationExpressionSyntax? invocation = argument.FirstAncestorOrSelf<InvocationExpressionSyntax>();
+                    if (invocation is null) continue;
+                    IMethodSymbol? method = semanticModel.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
+                    int index = invocation.ArgumentList.Arguments.IndexOf(argument);
+                    if (method is null || index < 0 || index >= method.Parameters.Length) continue;
+                    typeName = ConvertType(method.Parameters[index].Type);
+                    name = $"divisionDiscard{outDiscardCounter++}";
+                }
+                else continue;
+
+                if (string.IsNullOrEmpty(typeName) || typeName == "void") continue;
+
+                outArgumentLocals[argument] = name;
+                WriteIndent();
+                hlsl.AppendLine($"{typeName} {name};");
+            }
+        }
+
+        /// <summary>
+        /// Emits an invocation argument, using the hoisted local for out-declarations.
+        /// </summary>
+        private void AppendArgument(ArgumentSyntax argument)
+        {
+            if (outArgumentLocals.TryGetValue(argument, out string? hoisted))
+            {
+                hlsl.Append(hoisted);
+                return;
+            }
+
+            Visit(argument.Expression);
+        }
+
         private void TranslateKernel(MethodDeclarationSyntax kernelMethod)
         {
             GetThreadCounts(kernelMethod); // Get thread counts from Kernel attribute
@@ -221,6 +288,36 @@ namespace DivisionEngine
         }
 
         #region StatementVisitors
+
+        /// <summary>
+        /// Translates "default(T)" into a zero-initialized value.
+        /// </summary>
+        public override void VisitDefaultExpression(DefaultExpressionSyntax node)
+            => AppendDefaultValue(semanticModel.GetTypeInfo(node.Type).Type);
+
+        /// <summary>
+        /// Emits a zero value for a type: a broadcast vector constructor, "(T)0" for a
+        /// struct, or a plain 0 for scalars.
+        /// </summary>
+        private void AppendDefaultValue(ITypeSymbol? type)
+        {
+            // A default literal inside a larger expression has no type of its own; the
+            // converted type (the target of the assignment) is the useful one.
+            string typeName = ConvertType(type);
+            if (type is null || type.SpecialType != SpecialType.None)
+            {
+                hlsl.Append(type?.SpecialType == SpecialType.System_Boolean ? "false" : "0");
+                return;
+            }
+
+            if (GetVectorComponentCount(type) > 0)
+            {
+                hlsl.Append($"{typeName}(0.0)");
+                return;
+            }
+
+            hlsl.Append($"({typeName})0");
+        }
 
         /// <summary>
         /// Visits statements like "float3 pos = new float3(1,2,3);".
@@ -261,6 +358,11 @@ namespace DivisionEngine
         /// </summary>
         public override void VisitForStatement(ForStatementSyntax node)
         {
+            // "[loop]" stops the optimizer from unrolling. Shader loops here are either
+            // data-dependent raymarch loops or nested noise loops; letting fxc unroll
+            // them made compilation of the SDF shader take over ten minutes.
+            WriteIndent();
+            hlsl.AppendLine("[loop]");
             WriteIndent();
 
             hlsl.Append("for ("); // Open loop description
@@ -342,6 +444,8 @@ namespace DivisionEngine
         public override void VisitDoStatement(DoStatementSyntax node)
         {
             WriteIndent();
+            hlsl.AppendLine("[loop]");
+            WriteIndent();
             hlsl.AppendLine("do");
 
             if (node.Statement is BlockSyntax block)
@@ -364,6 +468,8 @@ namespace DivisionEngine
         /// </summary>
         public override void VisitWhileStatement(WhileStatementSyntax node)
         {
+            WriteIndent();
+            hlsl.AppendLine("[loop]");
             WriteIndent();
             hlsl.Append("while (");
             Visit(node.Condition);
@@ -488,6 +594,16 @@ namespace DivisionEngine
                 return;
             }
 
+            // "new T()" for a struct is a zero-initialized value. HLSL has no default
+            // constructor for structs; "(T)0" is its zero-init idiom.
+            if (arguments.Count == 0 &&
+                typeInfo.Type is { TypeKind: TypeKind.Struct } structType &&
+                GetVectorComponentCount(structType) == 0)
+            {
+                hlsl.Append($"({typeName})0");
+                return;
+            }
+
             hlsl.Append($"{typeName}("); // Open argument list
             for (int i = 0; i < arguments.Count; i++) // Visit each argument
             {
@@ -559,10 +675,10 @@ namespace DivisionEngine
                 {
                     Visit(textureInstance);
                     hlsl.Append(".Load(int3(");
-                    Visit(node.ArgumentList.Arguments[0].Expression);
+                    AppendArgument(node.ArgumentList.Arguments[0]);
                     hlsl.Append(", ");
                     if (node.ArgumentList.Arguments.Count > 1)
-                        Visit(node.ArgumentList.Arguments[1].Expression);
+                        AppendArgument(node.ArgumentList.Arguments[1]);
                     else
                         hlsl.Append('0');
                     hlsl.Append("))");
@@ -577,7 +693,7 @@ namespace DivisionEngine
                 for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
                 {
                     hlsl.Append(", ");
-                    Visit(node.ArgumentList.Arguments[i].Expression);
+                    AppendArgument(node.ArgumentList.Arguments[i]);
                 }
                 hlsl.Append(')');
                 return;
@@ -599,7 +715,7 @@ namespace DivisionEngine
                         for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
                         {
                             if (i > 0) hlsl.Append(", ");
-                            Visit(node.ArgumentList.Arguments[i].Expression);
+                            AppendArgument(node.ArgumentList.Arguments[i]);
                         }
                     }
                     hlsl.Append(')');
@@ -621,7 +737,7 @@ namespace DivisionEngine
                     for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
                     {
                         if (i > 0) hlsl.Append(", ");
-                        Visit(node.ArgumentList.Arguments[i].Expression);
+                        AppendArgument(node.ArgumentList.Arguments[i]);
                     }
                     hlsl.Append(')');
                     return;
@@ -632,7 +748,7 @@ namespace DivisionEngine
                 for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
                 {
                     if (i > 0) hlsl.Append(", ");
-                    Visit(node.ArgumentList.Arguments[i].Expression);
+                    AppendArgument(node.ArgumentList.Arguments[i]);
                 }
                 hlsl.Append(')');
             }
@@ -647,7 +763,7 @@ namespace DivisionEngine
                     for (int i = 0; i < node.ArgumentList.Arguments.Count; i++)
                     {
                         if (i > 0) hlsl.Append(", ");
-                        Visit(node.ArgumentList.Arguments[i].Expression);
+                        AppendArgument(node.ArgumentList.Arguments[i]);
                     }
                     hlsl.Append(')');
                 }
@@ -665,7 +781,7 @@ namespace DivisionEngine
             for (int i = 0; i < node.ArgumentList.Arguments.Count; i++) // Handle multiple indices
             {
                 if (i > 0) hlsl.Append(", ");
-                Visit(node.ArgumentList.Arguments[i].Expression);
+                AppendArgument(node.ArgumentList.Arguments[i]);
             }
             hlsl.Append(']');
         }
@@ -748,6 +864,16 @@ namespace DivisionEngine
         {
             string memberName = node.Name.Identifier.Text;
 
+            // float.MaxValue and friends have no HLSL member equivalent; the
+            // predefined type name would otherwise be dropped and leave a bare
+            // ".MaxValue" in the output.
+            if (node.Expression is PredefinedTypeSyntax predefined &&
+                memberName is "MaxValue" or "MinValue" or "Epsilon")
+            {
+                hlsl.Append(PredefinedConstant(predefined.Keyword.Text, memberName));
+                return;
+            }
+
             // Helper-class constants (PBR.RECIPROCAL_PI) and enum members are static
             // fields; HLSL has neither namespaces nor enums, so inline them.
             if (semanticModel.GetSymbolInfo(node).Symbol is IFieldSymbol staticField && staticField.IsStatic)
@@ -783,16 +909,49 @@ namespace DivisionEngine
         }
 
         /// <summary>
-        /// Translates literal expressions like output numbers, strings, etc.
+        /// Maps a framework numeric limit (float.MaxValue, int.MinValue, ...) onto the
+        /// HLSL literal with the same value.
+        /// </summary>
+        private static string PredefinedConstant(string typeName, string member)
+        {
+            return (typeName, member) switch
+            {
+                ("float", "MaxValue") => "3.402823466e+38",
+                ("float", "MinValue") => "-3.402823466e+38",
+                ("float", "Epsilon") => "1.401298464e-45",
+                ("double", "MaxValue") => "1.7976931348623157e+308",
+                ("double", "MinValue") => "-1.7976931348623157e+308",
+                ("double", "Epsilon") => "4.9406564584124654e-324",
+                ("int", "MaxValue") => "2147483647",
+                ("int", "MinValue") => "(-2147483647 - 1)",
+                ("uint", "MaxValue") => "4294967295u",
+                ("long", "MaxValue") => "9223372036854775807L",
+                ("long", "MinValue") => "(-9223372036854775807L - 1L)",
+                ("ulong", "MaxValue") => "18446744073709551615UL",
+                _ => "0"
+            };
+        }
+
+        /// <summary>
+        /// Translates the "default" literal into a zero-initialized value.
         /// </summary>
         public override void VisitLiteralExpression(LiteralExpressionSyntax node)
         {
             string text = node.Token.Text;
 
+            if (node.IsKind(SyntaxKind.DefaultLiteralExpression))
+            {
+                AppendDefaultValue(semanticModel.GetTypeInfo(node).ConvertedType);
+                return;
+            }
+
             // HLSL reads an unsuffixed whole number as an int, so dropping the C#
             // float suffix from "1f" would silently turn "1f / 6f" into integer
             // division. Keep the value a float by always emitting a decimal point.
-            if (text.EndsWith('f') || text.EndsWith('F'))
+            // Hexadecimal integers can end in F too (0xFF), so only a literal whose
+            // value is actually floating point gets the suffix treatment.
+            bool isFloatingPointLiteral = node.Token.Value is float or double or decimal;
+            if (isFloatingPointLiteral && (text.EndsWith('f') || text.EndsWith('F')))
             {
                 text = text.TrimEnd('f', 'F');
                 if (!text.Contains('.') && !text.Contains('e') && !text.Contains('E'))
@@ -1543,6 +1702,25 @@ namespace DivisionEngine
             return false;
         }
 
+        // Locals created for out-argument declarations, keyed by the argument syntax.
+        private readonly Dictionary<ArgumentSyntax, string> outArgumentLocals = [];
+
+        // Semantic models are expensive to build for the whole project source set, so
+        // they are cached per syntax tree. Without this, every helper call in a large
+        // shader rebuilt the model, turning SDFShader3D's translation into minutes.
+        private readonly Dictionary<SyntaxTree, SemanticModel> helperSemanticModels = [];
+
+        private SemanticModel GetHelperSemanticModel(SyntaxTree tree)
+        {
+            if (helperSemanticModels.TryGetValue(tree, out SemanticModel? cached))
+                return cached;
+
+            SemanticModel model = compilation!.GetSemanticModel(tree);
+            helperSemanticModels[tree] = model;
+            return model;
+        }
+        private int outDiscardCounter;
+
         /// <summary>
         /// Writes an indentation to the HLSL string builder.
         /// </summary>
@@ -1619,7 +1797,7 @@ namespace DivisionEngine
                         "Helper classes must be compiled from source in the same project as the shader.");
                 }
 
-                SemanticModel helperModel = compilation.GetSemanticModel(declaration.SyntaxTree);
+                SemanticModel helperModel = GetHelperSemanticModel(declaration.SyntaxTree);
                 SemanticModel savedModel = semanticModel;
                 INamedTypeSymbol? savedHelperType = currentHelperType;
                 try

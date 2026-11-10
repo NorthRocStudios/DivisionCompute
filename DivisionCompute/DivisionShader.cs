@@ -102,7 +102,7 @@ namespace DivisionEngine
         /// <summary>
         /// Wraps an already-compiled shader compilation result into a dispatcher.
         /// </summary>
-        /// <param name="result">A successful result from <see cref="DivisionShaderCompiler.CompileHLSL"/>.</param>
+        /// <param name="result">A successful result from <see cref="DivisionShaderCompiler.CompileHLSL(HLSLTranslationResult)"/>.</param>
         /// <param name="device">The D3D11 device to create the compute shader on.</param>
         /// <param name="context">The immediate context used for dispatch and readback.</param>
         /// <exception cref="InvalidOperationException">If <paramref name="result"/> is not successful.</exception>

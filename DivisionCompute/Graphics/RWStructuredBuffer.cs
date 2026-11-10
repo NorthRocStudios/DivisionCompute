@@ -110,6 +110,12 @@ namespace DivisionEngine.Graphics
             => GpuBufferHelpers.Read<T>(_device, context, Buffer, Count, Stride);
 
         /// <summary>
+        /// Copies the current GPU contents into an existing CPU array.
+        /// </summary>
+        public void GetData(ID3D11DeviceContext context, Span<T> destination)
+            => GpuBufferHelpers.Read<T>(_device, context, Buffer, Count, Stride, destination);
+
+        /// <summary>
         /// Uploads new contents into the buffer. A shorter span updates only the
         /// leading elements.
         /// </summary>
