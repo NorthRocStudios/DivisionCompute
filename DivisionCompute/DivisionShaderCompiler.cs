@@ -30,6 +30,37 @@ namespace DivisionEngine
     public class DivisionShaderCompiler
     {
         /// <summary>
+        /// Raised for every translation, cache lookup and D3DCompile attempt. Hosts
+        /// forward these into their own log (the editor console, for example) so shader
+        /// compilation is visible next to the rest of the engine's logging.
+        /// </summary>
+        /// <remarks>
+        /// May be raised from a background thread: hosts that touch UI must marshal.
+        /// </remarks>
+        public static event Action<ShaderLogLevel, string>? Log;
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> compiledShaders = new();
+
+        /// <summary>
+        /// True when the named shader has already been compiled successfully in this
+        /// process. Background preloading uses this to skip shaders the renderer has
+        /// compiled synchronously, which avoids translating them twice.
+        /// </summary>
+        public static bool IsShaderCompiled(string shaderTypeName) => compiledShaders.ContainsKey(shaderTypeName);
+
+        private static void LogMessage(ShaderLogLevel level, string message)
+        {
+            try
+            {
+                Log?.Invoke(level, message);
+            }
+            catch
+            {
+                // A logging subscriber must never break shader compilation.
+            }
+        }
+
+        /// <summary>
         /// Creates a new compiler. Metadata references are resolved per shader.
         /// </summary>
         public DivisionShaderCompiler()
@@ -108,9 +139,16 @@ namespace DivisionEngine
                 {
                     kernelBytecodes.Add(cachedBytecode);
                     debugOutput.AppendLine($"Kernel '{kernelName}': {cachedBytecode.Length} bytes (cache hit)");
+                    compiledShaders[translatedShader.ShaderTypeName] = 0;
+                    LogMessage(ShaderLogLevel.Info,
+                        $"Shader '{translatedShader.ShaderTypeName}' kernel '{kernelName}': cache hit ({cachedBytecode.Length:N0} bytes)");
                     continue;
                 }
 
+                LogMessage(ShaderLogLevel.Info,
+                    $"Shader '{translatedShader.ShaderTypeName}' kernel '{kernelName}': compiling HLSL ({flags})...");
+
+                Stopwatch compileWatch = Stopwatch.StartNew();
                 Result compileResult = Compiler.Compile(
                     translatedShader.HLSLCode,
                     null!,
@@ -122,6 +160,8 @@ namespace DivisionEngine
                     out Blob? codeBlob,
                     out Blob? errorBlob);
 
+                long compileMilliseconds = compileWatch.ElapsedMilliseconds;
+
                 string kernelDebug = string.Empty;
                 if (errorBlob is not null && errorBlob.AsBytes().Length > 0)
                 {
@@ -132,6 +172,8 @@ namespace DivisionEngine
 
                 if (compileResult.Failure || codeBlob is null)
                 {
+                    LogMessage(ShaderLogLevel.Error,
+                        $"Shader '{translatedShader.ShaderTypeName}' kernel '{kernelName}': compilation failed: {kernelDebug}");
                     if (string.IsNullOrWhiteSpace(kernelDebug))
                         kernelDebug = compileResult.Description ?? "No additional compilation info";
 
@@ -148,8 +190,14 @@ namespace DivisionEngine
 
                 byte[] bytecode = codeBlob.AsBytes();
                 kernelBytecodes.Add(bytecode);
+                compiledShaders[translatedShader.ShaderTypeName] = 0;
                 WriteCachedBytecode(translatedShader, kernelName, flags, bytecode);
                 debugOutput.AppendLine($"Kernel '{kernelName}': {bytecode.Length} bytes");
+                LogMessage(ShaderLogLevel.Info,
+                    $"Shader '{translatedShader.ShaderTypeName}' kernel '{kernelName}': compiled in {compileMilliseconds:N0} ms ({bytecode.Length:N0} bytes)");
+                if (!string.IsNullOrWhiteSpace(kernelDebug))
+                    LogMessage(ShaderLogLevel.Warning,
+                        $"Shader '{translatedShader.ShaderTypeName}' kernel '{kernelName}' compiler output: {kernelDebug.Trim()}");
                 if (!string.IsNullOrWhiteSpace(kernelDebug))
                     debugOutput.AppendLine(kernelDebug.TrimEnd());
 
@@ -256,6 +304,7 @@ namespace DivisionEngine
         {
             ArgumentNullException.ThrowIfNull(shaderType);
 
+            Stopwatch translationWatch = Stopwatch.StartNew();
             try
             {
                 string? sourcePath = GetSourceFilePath(shaderType);
@@ -263,12 +312,13 @@ namespace DivisionEngine
                 {
                     string attrPath = shaderType.GetCustomAttribute<ShaderAttribute>()?.SourceFilePath
                         ?? "(no [Shader] attribute)";
-                    return HLSLTranslationResult.Failure(
+                    string message =
                         $"Could not locate the source file for shader '{shaderType.Name}'. " +
                         $"Attribute path was \"{attrPath}\". " +
                         $"Hint: use [Shader] with no arguments to let the compiler inject " +
-                        $"the correct path via [CallerFilePath].",
-                        shaderType.Name);
+                        $"the correct path via [CallerFilePath].";
+                    LogMessage(ShaderLogLevel.Error, $"Shader '{shaderType.Name}': {message}");
+                    return HLSLTranslationResult.Failure(message, shaderType.Name);
                 }
 
                 SyntaxTree syntaxTree = GetSyntaxTree(sourcePath);
@@ -284,23 +334,31 @@ namespace DivisionEngine
                 SyntaxNode root = syntaxTree.GetRoot();
                 StructDeclarationSyntax? structDeclaration = FindStructDeclaration(root, shaderType.Name);
                 if (structDeclaration == null)
-                    return HLSLTranslationResult.Failure(
-                        $"Struct '{shaderType.Name}' not found in {sourcePath}",
-                        shaderType.Name);
+                {
+                    string message = $"Struct '{shaderType.Name}' not found in {sourcePath}";
+                    LogMessage(ShaderLogLevel.Error, $"Shader '{shaderType.Name}': {message}");
+                    return HLSLTranslationResult.Failure(message, shaderType.Name);
+                }
 
                 List<string> kernelNames = FindAllKernelNames(structDeclaration, semanticModel);
                 if (kernelNames.Count == 0)
-                    return HLSLTranslationResult.Failure(
-                        $"No [Kernel] methods found in struct '{shaderType.Name}'",
-                        shaderType.Name);
+                {
+                    string message = $"No [Kernel] methods found in struct '{shaderType.Name}'";
+                    LogMessage(ShaderLogLevel.Error, $"Shader '{shaderType.Name}': {message}");
+                    return HLSLTranslationResult.Failure(message, shaderType.Name);
+                }
 
                 DivisionTranslator translator = new DivisionTranslator(semanticModel, shaderType, compilation);
                 string hlslCode = translator.Translate(structDeclaration);
+                LogMessage(ShaderLogLevel.Info,
+                    $"Shader '{shaderType.Name}': translated {hlslCode.Count(c => c == '\n') + 1:N0} HLSL lines in {translationWatch.ElapsedMilliseconds:N0} ms");
                 return HLSLTranslationResult.Success(hlslCode, kernelNames, shaderType.Name);
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"Division Shader Compiler: translation of '{shaderType.Name}' failed:\n{ex}");
+                LogMessage(ShaderLogLevel.Error,
+                    $"Shader '{shaderType.Name}': translation failed: {ex.GetType().Name}: {ex.Message}");
                 return HLSLTranslationResult.Failure(
                     $"{ex.GetType().Name}: {ex.Message}",
                     shaderType.Name);
@@ -428,7 +486,11 @@ namespace DivisionEngine
         {
             string? path = CachePath(shader, kernelName, flags);
             if (path is null || !File.Exists(path)) return null;
+            return ReadCacheFile(path);
+        }
 
+        private static byte[]? ReadCacheFile(string path)
+        {
             try
             {
                 byte[] content = File.ReadAllBytes(path);

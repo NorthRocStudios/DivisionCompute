@@ -49,6 +49,8 @@ large, heavily inlined shaders), so a successful compilation is cached on disk:
 - Override the directory with `DivisionShaderCompiler.CacheDirectory`, or turn
   caching off entirely with `DIVISION_DISABLE_SHADER_CACHE=1`.
 - Cache writes are best-effort: a missing or unwritable cache simply compiles.
+- Shaders are independent: hosts that compile several should translate/compile them
+  in parallel (D3DCompile itself is single-threaded per kernel).
 
 Pass `ShaderFlags.SkipOptimization` / `OptimizationLevel1` to
 `DivisionShaderCompiler.CompileHLSL(result, flags)` when you want to trade code
