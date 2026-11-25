@@ -45,8 +45,8 @@ Fixed:
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
-    <PackageReference Include="NorthRoc.DivisionMath" Version="0.3.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.12.0" />
+    <PackageReference Include="NorthRoc.DivisionMath" Version="0.3.1" />
     <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
   </ItemGroup>
