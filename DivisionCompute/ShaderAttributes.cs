@@ -40,6 +40,17 @@ namespace DivisionEngine
         /// auto-detected path.
         /// </remarks>
         public string SourceFilePath { get; set; } = sourceFilePath;
+
+        /// <summary>
+        /// When <c>false</c>, the DivisionCompute source generator skips this struct,
+        /// so it is always translated by the runtime Roslyn translator.
+        /// </summary>
+        /// <remarks>
+        /// Use this for shaders that only exist to test diagnostics, for shaders whose
+        /// code is generated at runtime, or during hot reload when the source on disk
+        /// is ahead of the built assembly. The default is <c>true</c>.
+        /// </remarks>
+        public bool GenerateDescriptor { get; set; } = true;
     }
 
     /// <summary>

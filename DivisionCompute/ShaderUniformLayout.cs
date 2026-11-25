@@ -14,7 +14,7 @@ namespace DivisionEngine
     /// <summary>
     /// The HLSL type of a shader uniform, used to validate setter calls.
     /// </summary>
-    internal enum UniformKind
+    public enum UniformKind
     {
         /// <summary><c>float</c></summary>
         Float,
@@ -92,6 +92,26 @@ namespace DivisionEngine
         /// The uniforms in declaration order.
         /// </summary>
         public IReadOnlyList<UniformField> Fields { get; }
+
+        private ShaderUniformLayout(List<UniformField> fields, int byteSize)
+        {
+            Fields = fields;
+            _byName = fields.ToDictionary(f => f.Name, f => f, StringComparer.Ordinal);
+            ByteSize = byteSize;
+        }
+
+        /// <summary>
+        /// Rebuilds a runtime layout from the bindings baked into a shader
+        /// descriptor, so a build-time generated shader needs no reflection.
+        /// </summary>
+        internal static ShaderUniformLayout FromBindings(int byteSize, IReadOnlyList<DivisionUniformBinding> bindings)
+        {
+            var fields = new List<UniformField>(bindings.Count);
+            foreach (DivisionUniformBinding binding in bindings)
+                fields.Add(new UniformField(binding.Name, binding.Kind, binding.Size, binding.Offset));
+
+            return new ShaderUniformLayout(fields, byteSize);
+        }
 
         private ShaderUniformLayout(Type shaderType)
         {

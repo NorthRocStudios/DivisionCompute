@@ -1,4 +1,4 @@
-﻿//
+//
 // Copyright (c) 2026 Rex Woodfield and DivisionCompute contributors
 //
 // This file is part of DivisionCompute and is subject to the terms
@@ -37,14 +37,24 @@ namespace DivisionEngine
         /// </summary>
         public string ShaderTypeName { get; }
 
+        /// <summary>
+        /// True when the HLSL came from a descriptor baked at build time rather than
+        /// from the runtime translator. Layouts come from that descriptor only in this
+        /// case; a runtime translation (hot reload, forced fallback) must use the
+        /// reflection-based layouts instead.
+        /// </summary>
+        public bool UsedGeneratedDescriptor { get; }
+
         private HLSLTranslationResult(bool success, string? hlslCode, string? errorMessage,
-                                   List<string> kernelNames, string shaderTypeName)
+                                   List<string> kernelNames, string shaderTypeName,
+                                   bool usedGeneratedDescriptor)
         {
             IsSuccess = success;
             HLSLCode = hlslCode;
             ErrorMessage = errorMessage;
             KernelNames = kernelNames ?? [];
             ShaderTypeName = shaderTypeName;
+            UsedGeneratedDescriptor = usedGeneratedDescriptor;
         }
 
         /// <summary>
@@ -53,9 +63,16 @@ namespace DivisionEngine
         /// <param name="hlslCode">Compiled HLSL code</param>
         /// <param name="kernelNames">Name of each translated kernel</param>
         /// <param name="shaderTypeName">Shader type name</param>
+        /// <param name="usedGeneratedDescriptor">
+        /// True when the HLSL came from a build-time descriptor.
+        /// </param>
         /// <returns>Compilation result container</returns>
-        public static HLSLTranslationResult Success(string hlslCode, List<string> kernelNames, string shaderTypeName) => 
-            new HLSLTranslationResult(true, hlslCode, null, kernelNames, shaderTypeName);
+        public static HLSLTranslationResult Success(
+            string hlslCode,
+            List<string> kernelNames,
+            string shaderTypeName,
+            bool usedGeneratedDescriptor = false) =>
+            new HLSLTranslationResult(true, hlslCode, null, kernelNames, shaderTypeName, usedGeneratedDescriptor);
 
         /// <summary>
         /// Create a failed compilation result.
@@ -63,8 +80,8 @@ namespace DivisionEngine
         /// <param name="errorMessage">Error message for compilation failure</param>
         /// <param name="shaderTypeName">Shader type name if available</param>
         /// <returns>Compilation result container</returns>
-        public static HLSLTranslationResult Failure(string errorMessage, string shaderTypeName = "Unknown") => 
-            new HLSLTranslationResult(false, null, errorMessage, [], shaderTypeName);
+        public static HLSLTranslationResult Failure(string errorMessage, string shaderTypeName = "Unknown") =>
+            new HLSLTranslationResult(false, null, errorMessage, [], shaderTypeName, false);
 
         /// <summary>
         /// Compilation result string.

@@ -84,6 +84,16 @@ namespace DivisionEngine
         public static bool IsVector(Type type) => VectorTypeNames.Contains(type.Name);
 
         /// <summary>
+        /// True when the name is one of the supported HLSL vector names.
+        /// </summary>
+        internal static bool IsVectorTypeName(string name) => VectorTypeNames.Contains(name);
+
+        /// <summary>
+        /// True when the name is one of the supported HLSL matrix names.
+        /// </summary>
+        internal static bool IsMatrixTypeName(string name) => MatrixTypeNames.Contains(name);
+
+        /// <summary>
         /// True when the type is one of the supported HLSL matrix names.
         /// </summary>
         public static bool IsMatrix(Type type) => MatrixTypeNames.Contains(type.Name);

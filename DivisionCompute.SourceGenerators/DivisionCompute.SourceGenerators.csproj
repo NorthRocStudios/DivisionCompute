@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!--
+      The generator targets net10.0 because it compiles the runtime translator from
+      source. That works for `dotnet build` (csc runs on the .NET 10 runtime). Hosts
+      whose compiler runs on .NET Framework (Visual Studio's ServiceHub) cannot load
+      it; they fall back to the runtime translator, which stays fully functional.
+      RS1041 is the analyzer-authoring rule that warns about exactly this trade-off.
+    -->
+    <NoWarn>$(NoWarn);RS1035;RS2008;RS1041;CS1591</NoWarn>
+    <RootNamespace>DivisionCompute.SourceGenerators</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Roslyn is provided by the compiler; never copy it next to the analyzer. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" PrivateAssets="all" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The translator is compiled into the generator from the same sources the runtime
+      uses, so build-time and runtime HLSL cannot drift apart. These files must stay
+      free of D3D/Vortice dependencies; that is why DivisionTranslator matches
+      resource types by name instead of typeof(...).
+    -->
+    <Compile Include="..\DivisionCompute\DivisionTranslator.cs" Link="Shared\DivisionTranslator.cs" />
+    <Compile Include="..\DivisionCompute\ShaderStructLayout.cs" Link="Shared\ShaderStructLayout.cs" />
+    <Compile Include="..\DivisionCompute\ShaderUniformLayout.cs" Link="Shared\ShaderUniformLayout.cs" />
+    <Compile Include="..\DivisionCompute\ShaderSymbolLayout.cs" Link="Shared\ShaderSymbolLayout.cs" />
+    <Compile Include="..\DivisionCompute\DivisionShaderDescriptorTypes.cs" Link="Shared\DivisionShaderDescriptorTypes.cs" />
+    <Compile Include="..\DivisionCompute\ShaderConstants.cs" Link="Shared\ShaderConstants.cs" />
+  </ItemGroup>
+
+</Project>

@@ -5,7 +5,6 @@
 // of the DivisionCompute License. See the LICENSE.txt file in the
 // project root for full license terms.
 //
-using DivisionEngine.Graphics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -29,6 +28,7 @@ namespace DivisionEngine
         private readonly StringBuilder hlsl = new StringBuilder();
         private int indentLvl = 0;
         private int? threadsX, threadsY, threadsZ;
+        private INamedTypeSymbol? shaderSymbol;
 
         // Storage for translation
         private readonly List<string> resourceDeclarations = [];
@@ -74,6 +74,11 @@ namespace DivisionEngine
         /// <returns>HLSL source code</returns>
         public string Translate(StructDeclarationSyntax shaderStruct)
         {
+            // The symbol is optional: when the caller has a runtime Type the
+            // translator uses reflection instead, which also resolves element
+            // structs that are not part of the source project.
+            shaderSymbol = semanticModel.GetDeclaredSymbol(shaderStruct);
+
             List<MethodDeclarationSyntax> kernels = FindAllKernels(shaderStruct);
             List<MethodDeclarationSyntax> inlineFuncs = FindAllInlineFunctions(shaderStruct);
             CollectFields(shaderStruct);
@@ -104,7 +109,7 @@ namespace DivisionEngine
             List<string> uniformDeclarations = GetUniformDeclarations();
             if (uniformDeclarations.Count > 0)
             {
-                hlsl.AppendLine($"cbuffer {DivisionShader.UniformBufferName} : register(b0)");
+                hlsl.AppendLine($"cbuffer {DivisionShaderConstants.UniformBufferName} : register(b0)");
                 hlsl.AppendLine("{");
                 foreach (string declaration in uniformDeclarations) hlsl.AppendLine($"    {declaration}");
                 hlsl.AppendLine("};");
@@ -144,6 +149,13 @@ namespace DivisionEngine
             }
             return hlsl.ToString();
         }
+
+        /// <summary>
+        /// The kernel entry points found by the last <see cref="Translate"/> call,
+        /// in declaration order. The source generator uses these names to emit the
+        /// shader descriptor without re-parsing the struct.
+        /// </summary>
+        public IReadOnlyList<string> KernelNames => kernelNames;
 
         /// <summary>
         /// Statements that declare out-arguments get those locals emitted first.
@@ -898,7 +910,7 @@ namespace DivisionEngine
                 TryGetStructuredBufferField(node.Expression, out string fieldName, out string bufferTypeName))
             {
                 EnsureBufferLengthHelper(fieldName, bufferTypeName);
-                hlsl.Append($"DivisionBufferLength_{fieldName}(");
+                hlsl.Append($"{DivisionShaderConstants.BufferLengthHelperPrefix}{fieldName}(");
                 Visit(node.Expression);
                 hlsl.Append(')');
                 return;
@@ -1031,7 +1043,22 @@ namespace DivisionEngine
 
             if (processedStructs.Contains(structName)) return;
             if (IsBuiltInType(structName)) return; // Skip built-in types
+            if (IsBuiltInSymbolType(structSymbol)) return; // Scalars, enums, System.Numerics vectors
+
+            // Scalars, enums, and non-struct types are emitted by ConvertType; only
+            // real structs get an HLSL struct declaration.
+            if (structSymbol.TypeKind != TypeKind.Struct || structSymbol.SpecialType != SpecialType.None)
+                return;
+
             processedStructs.Add(structName);
+
+            // Structs that only exist as metadata (declared in a referenced assembly)
+            // have no syntax to translate, so emit their declaration from the symbol.
+            if (structSymbol.DeclaringSyntaxReferences.IsEmpty)
+            {
+                TranslateSymbolStruct(structSymbol);
+                return;
+            }
 
             foreach (SyntaxReference syntaxRef in structSymbol.DeclaringSyntaxReferences)
             {
@@ -1041,6 +1068,202 @@ namespace DivisionEngine
                     break;
                 }
             }
+        }
+
+        /// <summary>
+        /// Emits an HLSL struct declaration from a metadata-only Roslyn symbol.
+        /// Used when a structured buffer's element type lives in a referenced
+        /// assembly, which the source generator can see but cannot read as source.
+        /// </summary>
+        private void TranslateSymbolStruct(INamedTypeSymbol structSymbol)
+        {
+            if (structSymbol.TypeKind != TypeKind.Struct || structSymbol.SpecialType != SpecialType.None)
+                return;
+
+            var builder = new StringBuilder();
+            builder.AppendLine($"struct {structSymbol.Name}");
+            builder.AppendLine("{");
+
+            var nestedStructs = new List<INamedTypeSymbol>();
+
+            foreach (IFieldSymbol field in structSymbol.GetMembers().OfType<IFieldSymbol>())
+            {
+                if (field.IsStatic) continue;
+
+                ShaderStructLayout.ValidateHlslIdentifier(field.Name, $"field '{structSymbol.Name}.{field.Name}'");
+                ValidateSymbolStructField(field, structSymbol);
+
+                if (field.Type is INamedTypeSymbol { TypeKind: TypeKind.Struct } nested &&
+                    !IsBuiltInType(nested.Name) &&
+                    nested.DeclaringSyntaxReferences.IsEmpty &&
+                    !processedStructs.Contains(nested.Name))
+                {
+                    nestedStructs.Add(nested);
+                }
+
+                builder.AppendLine($"    {ConvertType(field.Type)} {field.Name};");
+            }
+
+            // Nested structs are dependencies and must be declared first.
+            foreach (INamedTypeSymbol nested in nestedStructs)
+            {
+                if (processedStructs.Add(nested.Name))
+                    TranslateSymbolStruct(nested);
+            }
+
+            builder.AppendLine("};");
+            structDeclarations.Add(builder.ToString());
+        }
+
+        /// <summary>
+        /// True when the symbol is represented directly by an HLSL type: a scalar,
+        /// one of the HLSL vector/matrix names, or a well-known System.Numerics
+        /// vector (which <see cref="ConvertType"/> maps to <c>floatN</c>).
+        /// </summary>
+        private static bool IsBuiltInSymbolType(ITypeSymbol type)
+        {
+            if (type.SpecialType != SpecialType.None) return true;
+            if (IsBuiltInType(type.Name)) return true;
+
+            return type.ContainingNamespace?.ToDisplayString() == "System.Numerics" &&
+                   type.Name is "Vector2" or "Vector3" or "Vector4";
+        }
+
+        /// <summary>
+        /// Rejects structured-buffer element types that cannot cross the CPU/GPU
+        /// boundary with the same layout, mirroring
+        /// <see cref="ShaderStructLayout.ValidateElementType(Type)"/> for symbols.
+        /// </summary>
+        private static void ValidateSymbolElementType(ITypeSymbol type, HashSet<ITypeSymbol> visiting, string fieldName)
+        {
+            string where = $"the element type '{type.Name}' of structured-buffer field '{fieldName}'";
+
+            if (type.SpecialType == SpecialType.System_Void || type is IPointerTypeSymbol || type is IArrayTypeSymbol ||
+                type.IsRefLikeType)
+            {
+                throw new NotSupportedException(
+                    $"{where} cannot be used in a structured buffer. Arrays, pointers, by-ref types, and ref structs are not supported.");
+            }
+
+            if (!type.IsValueType || type.SpecialType == SpecialType.System_String)
+                throw new NotSupportedException(
+                    $"{where} is not a value type. Structured-buffer elements must be unmanaged structs.");
+
+            if (type is INamedTypeSymbol { IsGenericType: true })
+                throw new NotSupportedException(
+                    $"{where} is generic. Use a non-generic sequential struct.");
+
+            if (type.TypeKind == TypeKind.Enum)
+            {
+                SpecialType underlying = ((INamedTypeSymbol)type).EnumUnderlyingType?.SpecialType ?? SpecialType.None;
+                if (underlying is SpecialType.System_Int32 or SpecialType.System_UInt32) return;
+
+                throw new NotSupportedException(
+                    $"{where} is an enum that is not backed by int or uint. Structured-buffer enums must use int or uint.");
+            }
+
+            switch (type.SpecialType)
+            {
+                case SpecialType.System_Boolean:
+                    throw new NotSupportedException(
+                        "bool fields are not supported in structured buffers because C# bool is 1 byte and HLSL bool is 4 bytes. " +
+                        "Use int or uint instead.");
+                case SpecialType.System_Single:
+                case SpecialType.System_Double:
+                case SpecialType.System_Int32:
+                case SpecialType.System_UInt32:
+                    return;
+            }
+
+            if (type.Name is "Char" or "Half" or "Decimal" or "IntPtr" or "UIntPtr")
+                throw new NotSupportedException($"{where} uses '{type.Name}', which is not supported in structured buffers.");
+
+            if (type.SpecialType != SpecialType.None)
+                throw new NotSupportedException(
+                    $"{where} is primitive type '{type.Name}'. Use float, double, int, or uint.");
+
+            if (ShaderStructLayout.IsVectorTypeName(type.Name)) return;
+
+            if (type.ContainingNamespace?.ToDisplayString() == "System.Numerics" &&
+                type.Name is "Vector2" or "Vector3" or "Vector4")
+            {
+                return;
+            }
+
+            if (ShaderStructLayout.IsMatrixTypeName(type.Name))
+                throw new NotSupportedException(
+                    $"{where} is a matrix. Matrices are not supported in structured buffers yet; use float4 fields.");
+
+            if (type.TypeKind != TypeKind.Struct)
+                throw new NotSupportedException($"{where} is not a struct, which structured buffers require.");
+
+            if (!visiting.Add(type))
+                throw new NotSupportedException($"{where} contains a recursive field cycle.");
+
+            if (type.GetMembers().OfType<IPropertySymbol>().Any())
+                throw new NotSupportedException(
+                    $"{where} has properties. Structured-buffer elements must expose plain instance fields so HLSL can address them.");
+
+            foreach (ISymbol member in type.GetMembers())
+            {
+                if (member is IFieldSymbol { IsStatic: false } field)
+                    ValidateSymbolElementType(field.Type, visiting, fieldName);
+            }
+
+            visiting.Remove(type);
+        }
+
+        /// <summary>
+        /// Rejects field types that cannot cross the CPU/GPU boundary with the same
+        /// layout, mirroring the rules of <see cref="ShaderStructLayout"/>.
+        /// </summary>
+        private void ValidateSymbolStructField(IFieldSymbol field, INamedTypeSymbol structSymbol)
+        {
+            ITypeSymbol type = field.Type;
+            string where = $"field '{structSymbol.Name}.{field.Name}'";
+            string typeName = type.Name;
+
+            if (type.TypeKind == TypeKind.Enum)
+            {
+                SpecialType underlying = ((INamedTypeSymbol)type).EnumUnderlyingType?.SpecialType ?? SpecialType.None;
+                if (underlying is SpecialType.System_Int32 or SpecialType.System_UInt32) return;
+
+                throw new NotSupportedException(
+                    $"{where} uses an enum that is not backed by int or uint. Structured-buffer enums must use int or uint.");
+            }
+
+            switch (type.SpecialType)
+            {
+                case SpecialType.System_Single:
+                case SpecialType.System_Double:
+                case SpecialType.System_Int32:
+                case SpecialType.System_UInt32:
+                    return;
+                case SpecialType.System_Boolean:
+                    throw new NotSupportedException(
+                        $"{where} is a bool. C# bool is 1 byte and HLSL bool is 4 bytes; use int or uint instead.");
+            }
+
+            if (typeName is "char" or "Half")
+                throw new NotSupportedException($"{where} uses '{typeName}', which is not supported in structured buffers.");
+
+            if (ShaderStructLayout.IsVectorTypeName(typeName)) return;
+
+            if (ShaderStructLayout.IsMatrixTypeName(typeName))
+                throw new NotSupportedException(
+                    $"{where} is matrix '{typeName}'. Matrices are not supported in structured buffers yet; use float4 fields.");
+
+            if (type is IArrayTypeSymbol || type is IPointerTypeSymbol)
+                throw new NotSupportedException($"{where} is an array or pointer, which cannot be marshalled to HLSL.");
+
+            if (type.IsReferenceType)
+                throw new NotSupportedException($"{where} is reference type '{typeName}'. Structured-buffer elements must be unmanaged structs.");
+
+            if (type is INamedTypeSymbol { IsGenericType: true })
+                throw new NotSupportedException($"{where} is generic type '{typeName}', which cannot be placed in a structured buffer.");
+
+            if (type.TypeKind != TypeKind.Struct)
+                throw new NotSupportedException($"{where} has type '{typeName}', which cannot be placed in a structured buffer.");
         }
 
         /// <summary>
@@ -1068,6 +1291,13 @@ namespace DivisionEngine
         /// </summary>
         private void TranslateStructDeclaration(StructDeclarationSyntax structDecl)
         {
+            // A struct may be declared in another file than the shader (a DTO next to
+            // it, for example). Semantic queries must run against that file's model,
+            // not the shader's model.
+            SemanticModel model = structDecl.SyntaxTree == semanticModel.SyntaxTree || compilation is null
+                ? semanticModel
+                : compilation.GetSemanticModel(structDecl.SyntaxTree);
+
             StringBuilder structBuilder = new StringBuilder();
             structBuilder.AppendLine($"struct {structDecl.Identifier.Text}");
             structBuilder.AppendLine("{");
@@ -1077,7 +1307,7 @@ namespace DivisionEngine
             {
                 TypeSyntax fieldType = field.Declaration.Type;
                 string fieldName = field.Declaration.Variables.First().Identifier.Text;
-                ITypeSymbol? typeSymbol = semanticModel.GetTypeInfo(fieldType).Type;
+                ITypeSymbol? typeSymbol = model.GetTypeInfo(fieldType).Type;
                 string hlslType = ConvertType(typeSymbol);
 
                 if (typeSymbol is INamedTypeSymbol namedType && namedType.TypeKind == TypeKind.Struct && !IsBuiltInType(namedType.Name))
@@ -1367,6 +1597,12 @@ namespace DivisionEngine
         /// </remarks>
         private void CollectFields(StructDeclarationSyntax structDeclaration)
         {
+            // Explicit register slots keep resource bindings stable across kernels.
+            // Without them D3DCompiler compacts the slots of resources a kernel does
+            // not use, while the runtime binds by the C# declaration order, so a
+            // multi-kernel shader can read the wrong buffer or UAV.
+            uint srvSlot = 0, uavSlot = 0;
+
             foreach (FieldDeclarationSyntax field in structDeclaration.Members.OfType<FieldDeclarationSyntax>())
             {
                 // const fields are implicitly static in C# but carry no "static"
@@ -1388,7 +1624,20 @@ namespace DivisionEngine
                 if (isShaderResource) // This is a GPU resource (buffer, texture, etc.)
                 {
                     string? hlslDeclaration = TranslateResourceField(fieldType, fieldName, runtimeField);
-                    if (hlslDeclaration != null) resourceDeclarations.Add(hlslDeclaration);
+                    if (hlslDeclaration != null)
+                    {
+                        // Samplers are emitted without a binding (the translator injects
+                        // the default sampler); buffers and textures get explicit slots
+                        // matching DivisionComputeContext.GetResourceLayout.
+                        if (fieldType is GenericNameSyntax genericField)
+                        {
+                            string register = IsUavResource(runtimeField, genericField)
+                                ? $"u{uavSlot++}"
+                                : $"t{srvSlot++}";
+                            hlslDeclaration = hlslDeclaration.TrimEnd(';') + $" : register({register});";
+                        }
+                        resourceDeclarations.Add(hlslDeclaration);
+                    }
                 }
                 else if (shaderType is null)
                 {
@@ -1408,14 +1657,50 @@ namespace DivisionEngine
         /// </summary>
         private List<string> GetUniformDeclarations()
         {
-            if (shaderType is null) return variableDeclarations;
+            if (shaderType is not null)
+            {
+                ShaderUniformLayout layout = ShaderUniformLayout.For(shaderType);
+                return
+                [
+                    .. layout.Fields.Select(field =>
+                        $"{ShaderUniformLayout.GetHlslTypeName(field.Kind)} {field.Name};")
+                ];
+            }
 
-            ShaderUniformLayout layout = ShaderUniformLayout.For(shaderType);
-            return
-            [
-                .. layout.Fields.Select(field =>
-                    $"{ShaderUniformLayout.GetHlslTypeName(field.Kind)} {field.Name};")
-            ];
+            // No runtime type (the source generator, or a caller that only has
+            // source): derive the same layout from the struct's symbol. This
+            // validates the fields and keeps the HLSL in step with the descriptor
+            // the generator emits.
+            if (shaderSymbol is not null)
+            {
+                List<SymbolUniformField> uniforms = ShaderSymbolLayout.GetUniforms(shaderSymbol);
+                var declarations = new List<string>(uniforms.Count);
+                foreach (SymbolUniformField uniform in uniforms)
+                    declarations.Add($"{ShaderUniformLayout.GetHlslTypeName(uniform.Kind)} {uniform.Name};");
+
+                return declarations;
+            }
+
+            return variableDeclarations;
+        }
+
+        /// <summary>
+        /// True when the resource is written through a UAV (RW*) rather than read
+        /// through an SRV. Mirrors the classification in
+        /// <see cref="DivisionComputeContext.GetResourceLayout"/>.
+        /// </summary>
+        private static bool IsUavResource(FieldInfo? runtimeField, GenericNameSyntax generic)
+        {
+            // Match on the generic definition name rather than typeof(RWTexture2D<>)
+            // so this file compiles into the source generator, which never loads the
+            // runtime assembly. The names are unique to DivisionCompute.
+            if (runtimeField is not null && runtimeField.FieldType.IsGenericType)
+            {
+                string definitionName = runtimeField.FieldType.GetGenericTypeDefinition().Name;
+                return definitionName is "RWTexture2D`1" or "RWTexture3D`1" or "RWBuffer`1" or "RWStructuredBuffer`1";
+            }
+
+            return generic.Identifier.Text is "RWTexture2D" or "RWTexture3D" or "RWBuffer" or "RWStructuredBuffer";
         }
 
         /// <summary>
@@ -1469,10 +1754,24 @@ namespace DivisionEngine
                     ITypeSymbol? typeSymbol = semanticModel.GetTypeInfo(typeArg).Type;
                     elementType = ConvertType(typeSymbol);
 
-                    // If StructuredBuffer, translate the element struct
-                    if ((genericName == "StructuredBuffer" || genericName == "RWStructuredBuffer") &&
-                        typeSymbol is INamedTypeSymbol namedType && namedType.TypeKind == TypeKind.Struct)
-                        TranslateStructIfNeeded(namedType);
+                    // If StructuredBuffer, validate and translate the element struct.
+                    // The symbol path has to enforce the same layout rules the
+                    // reflection path applies through ShaderStructLayout.
+                    if (genericName is "StructuredBuffer" or "RWStructuredBuffer")
+                    {
+                        if (typeSymbol is null)
+                            throw new NotSupportedException(
+                                $"Could not resolve the element type of structured-buffer field '{fieldName}'.");
+
+                        ValidateSymbolElementType(typeSymbol, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), fieldName);
+
+                        if (typeSymbol is INamedTypeSymbol namedType &&
+                            namedType.TypeKind == TypeKind.Struct &&
+                            !IsBuiltInSymbolType(typeSymbol))
+                        {
+                            TranslateStructIfNeeded(namedType);
+                        }
+                    }
                 }
 
                 return genericName switch // Map to HLSL
@@ -1523,13 +1822,13 @@ namespace DivisionEngine
                     return false;
 
                 Type definition = fieldType.GetGenericTypeDefinition();
-                if (definition != typeof(StructuredBuffer<>) &&
-                    definition != typeof(RWStructuredBuffer<>))
+                string definitionName = definition.Name;
+                if (definitionName is not ("StructuredBuffer`1" or "RWStructuredBuffer`1"))
                 {
                     return false;
                 }
 
-                string genericName = definition.Name[..definition.Name.IndexOf('`')];
+                string genericName = definitionName[..definitionName.IndexOf('`')];
                 Type elementType = fieldType.GetGenericArguments()[0];
                 fieldName = candidateName;
                 bufferTypeName = $"{genericName}<{ShaderStructLayout.GetHlslTypeName(elementType)}>";
@@ -1560,7 +1859,7 @@ namespace DivisionEngine
                 return;
 
             bufferLengthHelpers[fieldName] =
-                $"int DivisionBufferLength_{fieldName}({bufferTypeName} buffer)\n" +
+                $"int {DivisionShaderConstants.BufferLengthHelperPrefix}{fieldName}({bufferTypeName} buffer)\n" +
                 "{\n" +
                 "    uint count;\n" +
                 "    uint stride;\n" +

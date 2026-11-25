@@ -38,6 +38,12 @@ namespace DivisionEngine
         public string ShaderTypeName { get; }
 
         /// <summary>
+        /// True when the HLSL compiled here came from a build-time descriptor, so the
+        /// descriptor's resource and uniform layouts match it.
+        /// </summary>
+        public bool UsedGeneratedDescriptor { get; }
+
+        /// <summary>
         /// Compiled bytecode for the first kernel. Kept for compatibility; use
         /// <see cref="KernelBytecodes"/> when the shader contains multiple kernels.
         /// </summary>
@@ -55,7 +61,8 @@ namespace DivisionEngine
             string debugMessage,
             List<string> kernelNames,
             string shaderTypeName,
-            IReadOnlyList<byte[]> kernelBytecodes)
+            IReadOnlyList<byte[]> kernelBytecodes,
+            bool usedGeneratedDescriptor)
         {
             IsSuccess = isSuccess;
             HLSLCode = hlslCode;
@@ -63,6 +70,7 @@ namespace DivisionEngine
             KernelNames = kernelNames ?? [];
             ShaderTypeName = shaderTypeName;
             KernelBytecodes = kernelBytecodes;
+            UsedGeneratedDescriptor = usedGeneratedDescriptor;
         }
 
         /// <summary>
@@ -73,14 +81,16 @@ namespace DivisionEngine
         /// <param name="debugMessage">Debug output of the compiler</param>
         /// <param name="shaderTypeName">Shader type name</param>
         /// <param name="bytecode">The compiled HLSL bytecode</param>
+        /// <param name="usedGeneratedDescriptor">True when the HLSL came from a build-time descriptor.</param>
         /// <returns>Successful HLSL compilation container</returns>
         public static HLSLCompilationResult Success(
             string hlslCode,
             List<string> kernelNames,
             string debugMessage,
             string shaderTypeName,
-            byte[] bytecode)
-            => Success(hlslCode, kernelNames, debugMessage, shaderTypeName, new[] { bytecode });
+            byte[] bytecode,
+            bool usedGeneratedDescriptor = false)
+            => Success(hlslCode, kernelNames, debugMessage, shaderTypeName, new[] { bytecode }, usedGeneratedDescriptor);
 
         /// <summary>
         /// Build a successful HLSLCompilationResult container for one or more kernels.
@@ -90,13 +100,15 @@ namespace DivisionEngine
         /// <param name="debugMessage">Debug output of the compiler</param>
         /// <param name="shaderTypeName">Shader type name</param>
         /// <param name="kernelBytecodes">Compiled bytecode for each kernel, in kernel order</param>
+        /// <param name="usedGeneratedDescriptor">True when the HLSL came from a build-time descriptor.</param>
         /// <returns>Successful HLSL compilation container</returns>
         public static HLSLCompilationResult Success(
             string hlslCode,
             List<string> kernelNames,
             string debugMessage,
             string shaderTypeName,
-            IReadOnlyList<byte[]> kernelBytecodes)
+            IReadOnlyList<byte[]> kernelBytecodes,
+            bool usedGeneratedDescriptor = false)
         {
             ArgumentNullException.ThrowIfNull(hlslCode);
             ArgumentNullException.ThrowIfNull(kernelNames);
@@ -116,7 +128,8 @@ namespace DivisionEngine
                 debugMessage,
                 kernelNames,
                 shaderTypeName,
-                kernelBytecodes);
+                kernelBytecodes,
+                usedGeneratedDescriptor);
         }
 
         /// <summary>
@@ -126,6 +139,6 @@ namespace DivisionEngine
         /// <param name="shaderTypeName">Shader type name</param>
         /// <returns>Failed HLSL compilation container</returns>
         public static HLSLCompilationResult Failure(string debugMessage, string shaderTypeName = "Unknown")
-            => new(false, string.Empty, debugMessage, [], shaderTypeName, []);
+            => new(false, string.Empty, debugMessage, [], shaderTypeName, [], false);
     }
 }

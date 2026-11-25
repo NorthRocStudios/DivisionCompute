@@ -130,6 +130,18 @@ namespace DivisionEngine
             // before a GPU shader object is created.
             var layout = GetResourceLayout(shaderType).ToArray();
             var shader = DivisionShader.FromCompilation(compilation, Device, Context);
+
+            // Build-time generated descriptors carry the resource and uniform layout,
+            // so a baked shader needs no reflection at all. Use them only when the
+            // HLSL actually came from the descriptor: a hot-reloaded shader is
+            // translated from source, and its layouts must come from reflection.
+            if (compilation.UsedGeneratedDescriptor &&
+                DivisionShaderDescriptors.TryGet(shaderType, out DivisionShaderDescriptor? descriptor))
+            {
+                shader.ApplyDescriptor(descriptor!);
+                return shader;
+            }
+
             shader.SetResourceLayout(layout);
 
             // Plain fields form the parameter constant buffer at b0; every Set* call

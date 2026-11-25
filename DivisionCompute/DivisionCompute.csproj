@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -8,7 +8,7 @@
     <Title>Division Compute</Title>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageId>NorthRoc.$(AssemblyName)</PackageId>
-    <Version>0.4.1</Version>
+    <Version>0.5.0</Version>
     <Authors>Rex Woodfield</Authors>
     <Company>NorthRoc Studios</Company>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -16,18 +16,20 @@
     <RepositoryUrl>https://github.com/NorthRocStudios/DivisionCompute</RepositoryUrl>
     <PackageTags>compiler;hlsl;shader;translate;compute;gpu;cpu;csharp;windows</PackageTags>
     <PackageReleaseNotes>Added:
-- C# 7 out-argument declarations and discards (Foo(..., out int x), out _)
-- Zero-initialized struct construction (new T()) and default / default(T) values
-- float.MaxValue / MinValue / Epsilon and int/uint limit constants in shader code
-- [loop] hints on emitted loops (keeps fxc compile time and code size down)
-- Semantic-model cache for translated helper classes (large shaders translate ~200x faster)
-- Disk bytecode cache for compiled shaders (opt out with DIVISION_DISABLE_SHADER_CACHE=1)
-- GetData(ctx, Span&lt;T&gt;) readback overloads for every buffer/texture wrapper
-- Explicit ShaderFlags overload on CompileHLSL
+- Build-time shader generation: a Roslyn source generator translates [Shader] structs during dotnet build and bakes HLSL, kernel names, resource layout, packed uniform layout, and a normalized source hash into the assembly (no Roslyn or reflection at startup)
+- Hot reload detection: if a shader's source file changes after the build, TranslateShader falls back to Roslyn automatically and CreateShader uses reflection layouts (UsedGeneratedDescriptor=false); disable with DIVISION_DISABLE_SOURCE_CHANGE_DETECTION=1
+- Runtime translation is still the fallback: PreferGeneratedDescriptors, DIVISION_FORCE_RUNTIME_TRANSLATION=1, [Shader(GenerateDescriptor = false)], and DivisionShaderDescriptors.Unregister
+- Shader translation errors now surface as build errors (DIVSGEN001/DIVSGEN002)
+- TranslateShaders / CompileShaders batch APIs that parallelize across shaders and share one Roslyn compilation
+- Kernel compilation (D3DCompile) now runs in parallel across a shader's kernels
+- Structured-buffer element structs declared in referenced assemblies are emitted from metadata
+- Symbol-based uniform/resource layout shared by the runtime translator and the generator
+Changed:
+- One Roslyn compilation and metadata reference set per project instead of one per shader (~20x cheaper per translation); UseSharedCompilation=false restores the old behaviour
+- Microsoft.CodeAnalysis.CSharp replaces the Microsoft.CodeAnalysis meta-package (smaller deployment)
 Fixed:
-- Hexadecimal integer literals ending in F (0xFF) were rewritten as 0x.0
-- Helper methods called with nested math.* arguments failed overload resolution
-- Roslyn compilation missed the framework facade references (System.Runtime)</PackageReleaseNotes>
+- Structured-buffer element validation now applies when translating from source without a runtime type
+- Cross-file struct declarations are translated with the semantic model of their own syntax tree</PackageReleaseNotes>
     <Copyright>Copyright (c) 2026 Rex Woodfield and NorthRoc Studios contributors</Copyright>
     <RootNamespace>DivisionEngine</RootNamespace>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -43,10 +45,32 @@ Fixed:
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.CodeAnalysis" Version="5.9.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
     <PackageReference Include="NorthRoc.DivisionMath" Version="0.3.0" />
     <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- The source generator translates [Shader] structs at build time. -->
+    <ProjectReference Include="..\DivisionCompute.SourceGenerators\DivisionCompute.SourceGenerators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!--
+    Ship the generator inside the package so consumers get build-time shaders just by
+    referencing NorthRoc.DivisionCompute. NuGet treats any DLL under
+    analyzers/dotnet/cs as a Roslyn analyzer.
+  -->
+  <PropertyGroup>
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);PackDivisionShaderGenerator</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+
+  <Target Name="PackDivisionShaderGenerator">
+    <ItemGroup>
+      <TfmSpecificPackageFile Include="$(MSBuildProjectDirectory)\..\DivisionCompute.SourceGenerators\bin\$(Configuration)\net10.0\DivisionCompute.SourceGenerators.dll">
+        <PackagePath>analyzers/dotnet/cs</PackagePath>
+      </TfmSpecificPackageFile>
+    </ItemGroup>
+  </Target>
 
 </Project>

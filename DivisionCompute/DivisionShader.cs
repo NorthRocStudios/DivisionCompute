@@ -32,7 +32,7 @@ namespace DivisionEngine
         /// <summary>
         /// Name of the constant buffer that holds the shader's plain fields.
         /// </summary>
-        public const string UniformBufferName = "DivisionParams";
+        public const string UniformBufferName = DivisionShaderConstants.UniformBufferName;
 
         private readonly ID3D11ComputeShader[] _computeShaders;
         private readonly ID3D11Device _device;
@@ -154,11 +154,40 @@ namespace DivisionEngine
         {
             ArgumentNullException.ThrowIfNull(shaderType);
 
+            EnableUniformsCore(ShaderUniformLayout.For(shaderType));
+        }
+
+        /// <summary>
+        /// Applies a build-time generated descriptor: the resource layout and the
+        /// packed uniform layout come from the source generator, so no reflection is
+        /// needed to create this shader.
+        /// </summary>
+        /// <param name="descriptor">The descriptor registered for the shader type.</param>
+        internal void ApplyDescriptor(DivisionShaderDescriptor descriptor)
+        {
+            ArgumentNullException.ThrowIfNull(descriptor);
+
+            _layout.Clear();
+            foreach (DivisionResourceBinding resource in descriptor.Resources)
+            {
+                _layout.Add((
+                    resource.Name,
+                    resource.Slot,
+                    resource.Kind == DivisionResourceKind.Uav ? "UAV" : "SRV"));
+            }
+
+            if (descriptor.Uniforms.Count == 0) return;
+
+            EnableUniformsCore(ShaderUniformLayout.FromBindings(descriptor.UniformByteSize, descriptor.Uniforms));
+        }
+
+        private void EnableUniformsCore(ShaderUniformLayout layout)
+        {
             if (_layout.Any(entry => entry.kind == "CB"))
                 throw new InvalidOperationException(
                     $"Shader '{ShaderName}' already has a constant buffer bound; uniforms were enabled twice.");
 
-            _uniformLayout = ShaderUniformLayout.For(shaderType);
+            _uniformLayout = layout;
             if (_uniformLayout.Fields.Count == 0) return;
 
             _uniformBytes = new byte[_uniformLayout.ByteSize];
